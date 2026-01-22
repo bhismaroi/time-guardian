@@ -54,6 +54,9 @@ export function parseFingerprintExcel(file: ArrayBuffer): RawFingerprintRecord[]
 /**
  * Parse the Online Excel file
  * This file has a complex structure with multiple columns per date
+ * Row 9 (index 8) contains section headers like "Clock-in / Clock-out"
+ * Row 10 (index 9) contains date headers like "01 Oct, We"
+ * Row 11+ contains employee data
  */
 export function parseOnlineExcel(file: ArrayBuffer): Map<string, Map<string, { clockIn: string | null; clockOut: string | null }>> {
   const workbook = XLSX.read(file, { type: 'array' });
@@ -64,14 +67,52 @@ export function parseOnlineExcel(file: ArrayBuffer): Map<string, Map<string, { c
   // Result: Map<employeeName, Map<dateStr, {clockIn, clockOut}>>
   const result = new Map<string, Map<string, { clockIn: string | null; clockOut: string | null }>>();
 
-  // Find the header rows that contain date information
-  // Row 10 (index 9) typically contains date headers like "01 Oct, We"
+  // Find the header row with section names (row 9, index 8)
+  const sectionHeaderRow = data[8];
+  // Find the date row (row 10, index 9)
   const dateRow = data[9];
-  if (!dateRow || !Array.isArray(dateRow)) return result;
-
-  // Find the Clock-in/Clock-out section - typically starts around column index 70+
-  // We need to find where the actual clock data is
   
+  if (!dateRow || !Array.isArray(dateRow)) return result;
+  if (!sectionHeaderRow || !Array.isArray(sectionHeaderRow)) return result;
+
+  // Find the start column of "Clock-in / Clock-out" section
+  let clockSectionStart = -1;
+  let clockSectionEnd = -1;
+  
+  for (let col = 0; col < sectionHeaderRow.length; col++) {
+    const header = String(sectionHeaderRow[col] || '').toLowerCase();
+    if (header.includes('clock-in') && header.includes('clock-out')) {
+      clockSectionStart = col;
+      // Find the end of this section (next non-empty header or section with dates)
+      for (let endCol = col + 1; endCol < sectionHeaderRow.length; endCol++) {
+        const nextHeader = String(sectionHeaderRow[endCol] || '').trim();
+        if (nextHeader && !nextHeader.toLowerCase().includes('clock')) {
+          clockSectionEnd = endCol;
+          break;
+        }
+      }
+      if (clockSectionEnd === -1) {
+        clockSectionEnd = clockSectionStart + 32; // Assume 31 days max
+      }
+      break;
+    }
+  }
+
+  // If we couldn't find the section by header, fall back to pattern matching
+  if (clockSectionStart === -1) {
+    // Look for columns that contain clock patterns in employee rows
+    for (let col = 0; col < (data[10]?.length || 0); col++) {
+      const cellValue = String(data[10]?.[col] || '');
+      if (cellValue.match(/(\d{1,2}:\d{2}|_+)\s*-\s*(\d{1,2}:\d{2}|_+)/)) {
+        clockSectionStart = col;
+        clockSectionEnd = col + 32;
+        break;
+      }
+    }
+  }
+
+  console.log('Clock section found:', clockSectionStart, 'to', clockSectionEnd);
+
   // Parse employee rows (starting from row 11, index 10)
   for (let rowIdx = 10; rowIdx < data.length; rowIdx++) {
     const row = data[rowIdx];
@@ -84,22 +125,21 @@ export function parseOnlineExcel(file: ArrayBuffer): Map<string, Map<string, { c
     
     const fullName = firstName ? `${firstName} ${lastName}`.trim() : lastName;
     
-    // Find clock-in/clock-out data - it's in a specific section of the columns
-    // The data includes patterns like "08:12 - __" or "08:00 - 17:00" or "__ - 17:00"
     const employeeRecords = new Map<string, { clockIn: string | null; clockOut: string | null }>();
     
-    // The clock-in/clock-out section appears after several other data sections
-    // We need to look for the pattern in the row data
-    // Typically it's around columns 70-100 area based on the structure
+    // Parse the clock-in/clock-out section columns
+    const startCol = clockSectionStart !== -1 ? clockSectionStart : 0;
+    const endCol = clockSectionEnd !== -1 ? clockSectionEnd : row.length;
     
-    for (let col = 0; col < row.length; col++) {
+    for (let col = startCol; col < Math.min(endCol, row.length); col++) {
       const cellValue = String(row[col] || '');
       
       // Look for clock-in/clock-out pattern: "HH:MM - HH:MM" or "HH:MM - __" or "__ - HH:MM"
-      const clockPattern = cellValue.match(/(\d{1,2}:\d{2}|__|_\s*_)\s*-\s*(\d{1,2}:\d{2}|__|_\s*_)/);
+      const clockPattern = cellValue.match(/(\d{1,2}:\d{2}|_+)\s*-\s*(\d{1,2}:\d{2}|_+)/);
       
-      if (clockPattern && dateRow[col]) {
-        const dateStr = String(dateRow[col]);
+      if (clockPattern) {
+        // Get the date from the date row at the same column
+        const dateStr = String(dateRow[col] || '');
         const dateMatch = dateStr.match(/(\d{1,2})\s+(\w+),?\s*(\w+)?/);
         
         if (dateMatch) {
@@ -116,7 +156,16 @@ export function parseOnlineExcel(file: ArrayBuffer): Map<string, Map<string, { c
           const clockOut = clockPattern[2].includes('_') ? null : extractTime(clockPattern[2]);
           
           if (clockIn || clockOut) {
-            employeeRecords.set(normalizedDate, { clockIn, clockOut });
+            // If we already have a record for this date, merge the times
+            const existing = employeeRecords.get(normalizedDate);
+            if (existing) {
+              // Get earliest clock-in and latest clock-out
+              const mergedIn = getEarlierTimeStr(existing.clockIn, clockIn);
+              const mergedOut = getLaterTimeStr(existing.clockOut, clockOut);
+              employeeRecords.set(normalizedDate, { clockIn: mergedIn, clockOut: mergedOut });
+            } else {
+              employeeRecords.set(normalizedDate, { clockIn, clockOut });
+            }
           }
         }
       }
@@ -124,10 +173,50 @@ export function parseOnlineExcel(file: ArrayBuffer): Map<string, Map<string, { c
     
     if (employeeRecords.size > 0) {
       result.set(fullName.toLowerCase(), employeeRecords);
+      console.log(`Online: ${fullName} has ${employeeRecords.size} records`);
     }
   }
 
   return result;
+}
+
+/**
+ * Helper to get earlier time (for clock-in)
+ */
+function getEarlierTimeStr(time1: string | null, time2: string | null): string | null {
+  if (!time1) return time2;
+  if (!time2) return time1;
+  const min1 = parseTimeToMinutes(time1);
+  const min2 = parseTimeToMinutes(time2);
+  if (min1 === null) return time2;
+  if (min2 === null) return time1;
+  return min1 <= min2 ? time1 : time2;
+}
+
+/**
+ * Helper to get later time (for clock-out)
+ */
+function getLaterTimeStr(time1: string | null, time2: string | null): string | null {
+  if (!time1) return time2;
+  if (!time2) return time1;
+  const min1 = parseTimeToMinutes(time1);
+  const min2 = parseTimeToMinutes(time2);
+  if (min1 === null) return time2;
+  if (min2 === null) return time1;
+  return min1 >= min2 ? time1 : time2;
+}
+
+/**
+ * Parse time string to minutes (local helper)
+ */
+function parseTimeToMinutes(time: string | null): number | null {
+  if (!time) return null;
+  const parts = time.split(':');
+  if (parts.length < 2) return null;
+  const hours = parseInt(parts[0], 10);
+  const minutes = parseInt(parts[1], 10);
+  if (isNaN(hours) || isNaN(minutes)) return null;
+  return hours * 60 + minutes;
 }
 
 /**

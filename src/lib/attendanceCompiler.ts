@@ -25,6 +25,9 @@ export function compileAttendance(
   // Generate dates for October 2025 (since that's what the files contain)
   const dates = getMonthDates(2025, 9); // Month is 0-indexed, so 9 = October
 
+  console.log('Compiling attendance for', employees.length, 'employees');
+  console.log('Online data keys:', Array.from(onlineData.keys()));
+
   for (const employee of employees) {
     // Group fingerprint records by date for this employee
     const fingerprintByDate = new Map<string, { in: string | null; out: string | null }>();
@@ -47,8 +50,32 @@ export function compileAttendance(
       }
     }
 
-    // Get online data for this employee
-    const employeeOnlineData = onlineData.get(employee.name.toLowerCase()) || new Map();
+    // Try to find online data for this employee
+    // The online file uses "FirstName LastName" format, fingerprint uses full name
+    let employeeOnlineData = onlineData.get(employee.name.toLowerCase());
+    
+    // If not found, try partial matching
+    if (!employeeOnlineData) {
+      const nameParts = employee.name.toLowerCase().split(/\s+/);
+      for (const [onlineName, data] of onlineData) {
+        const onlineParts = onlineName.split(/\s+/);
+        // Check if any part matches
+        const matches = nameParts.some(part => 
+          onlineParts.some(op => op.includes(part) || part.includes(op))
+        );
+        if (matches) {
+          employeeOnlineData = data;
+          console.log(`Matched "${employee.name}" to online "${onlineName}"`);
+          break;
+        }
+      }
+    }
+
+    if (employeeOnlineData) {
+      console.log(`Employee "${employee.name}" has ${employeeOnlineData.size} online records`);
+    } else {
+      console.log(`Employee "${employee.name}" has NO online data`);
+    }
 
     // Build records for each date
     const records: MergedAttendanceRecord[] = [];
@@ -63,13 +90,18 @@ export function compileAttendance(
       const fingerprintOut = fingerprint?.out || null;
       
       // Get online data
-      const online = employeeOnlineData.get(dateStr);
+      const online = employeeOnlineData?.get(dateStr);
       const onlineIn = online?.clockIn || null;
       const onlineOut = online?.clockOut || null;
       
       // Merge: get earliest clock-in and latest clock-out from both sources
       const actualIn = getEarlierTime(fingerprintIn, onlineIn);
       const actualOut = getLaterTime(fingerprintOut, onlineOut);
+      
+      // Debug log for dates with data
+      if (fingerprintIn || fingerprintOut || onlineIn || onlineOut) {
+        console.log(`${employee.name} ${dateStr}: FP(${fingerprintIn}/${fingerprintOut}) + Online(${onlineIn}/${onlineOut}) = (${actualIn}/${actualOut})`);
+      }
       
       // Calculate attendance
       const calculation = calculateAttendance(date, actualIn, actualOut);
