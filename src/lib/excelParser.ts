@@ -1,8 +1,8 @@
 // Excel file parsing utilities
 
 import * as XLSX from 'xlsx';
-import type { RawFingerprintRecord, RawOnlineRecord } from './types';
-import { extractTime, parseDate } from './timeUtils';
+import type { RawFingerprintRecord } from './types';
+import { extractTime } from './timeUtils';
 
 /**
  * Parse the Fingerprint Excel file
@@ -53,10 +53,10 @@ export function parseFingerprintExcel(file: ArrayBuffer): RawFingerprintRecord[]
 
 /**
  * Parse the Online Excel file
- * This file has a complex structure with multiple columns per date
- * Row 9 (index 8) contains section headers like "Clock-in / Clock-out"
- * Row 10 (index 9) contains date headers like "01 Oct, We"
- * Row 11+ contains employee data
+ * Structure:
+ * - Row 9 (index 8): Section headers including "Clock-in / Clock-out"
+ * - Row 10 (index 9): Date headers like "01 Oct, We", "02 Oct, Th"
+ * - Row 11+ (index 10+): Employee data with clock times in format "HH:MM - HH:MM" or "HH:MM - __" or "__ - HH:MM"
  */
 export function parseOnlineExcel(file: ArrayBuffer): Map<string, Map<string, { clockIn: string | null; clockOut: string | null }>> {
   const workbook = XLSX.read(file, { type: 'array' });
@@ -72,10 +72,16 @@ export function parseOnlineExcel(file: ArrayBuffer): Map<string, Map<string, { c
   // Find the date row (row 10, index 9)
   const dateRow = data[9];
   
-  if (!dateRow || !Array.isArray(dateRow)) return result;
-  if (!sectionHeaderRow || !Array.isArray(sectionHeaderRow)) return result;
+  if (!dateRow || !Array.isArray(dateRow)) {
+    console.log('No date row found at index 9');
+    return result;
+  }
+  if (!sectionHeaderRow || !Array.isArray(sectionHeaderRow)) {
+    console.log('No section header row found at index 8');
+    return result;
+  }
 
-  // Find the start column of "Clock-in / Clock-out" section
+  // Find the "Clock-in / Clock-out" section by scanning the section header row
   let clockSectionStart = -1;
   let clockSectionEnd = -1;
   
@@ -83,35 +89,73 @@ export function parseOnlineExcel(file: ArrayBuffer): Map<string, Map<string, { c
     const header = String(sectionHeaderRow[col] || '').toLowerCase();
     if (header.includes('clock-in') && header.includes('clock-out')) {
       clockSectionStart = col;
-      // Find the end of this section (next non-empty header or section with dates)
-      for (let endCol = col + 1; endCol < sectionHeaderRow.length; endCol++) {
-        const nextHeader = String(sectionHeaderRow[endCol] || '').trim();
-        if (nextHeader && !nextHeader.toLowerCase().includes('clock')) {
-          clockSectionEnd = endCol;
-          break;
-        }
-      }
-      if (clockSectionEnd === -1) {
-        clockSectionEnd = clockSectionStart + 32; // Assume 31 days max
-      }
+      console.log(`Found "Clock-in / Clock-out" section at column ${col}`);
       break;
     }
   }
 
-  // If we couldn't find the section by header, fall back to pattern matching
-  if (clockSectionStart === -1) {
-    // Look for columns that contain clock patterns in employee rows
-    for (let col = 0; col < (data[10]?.length || 0); col++) {
-      const cellValue = String(data[10]?.[col] || '');
-      if (cellValue.match(/(\d{1,2}:\d{2}|_+)\s*-\s*(\d{1,2}:\d{2}|_+)/)) {
-        clockSectionStart = col;
-        clockSectionEnd = col + 32;
-        break;
+  // If we found the section header, find where it ends (next non-empty header that's not part of dates)
+  if (clockSectionStart !== -1) {
+    // Count consecutive date columns starting from clockSectionStart
+    for (let col = clockSectionStart; col < Math.min(clockSectionStart + 35, dateRow.length); col++) {
+      const dateStr = String(dateRow[col] || '');
+      // Check if this column has a date pattern like "01 Oct, We"
+      if (dateStr.match(/\d{1,2}\s+\w+,\s*\w+/)) {
+        clockSectionEnd = col + 1;
       }
+    }
+    console.log(`Clock section spans columns ${clockSectionStart} to ${clockSectionEnd}`);
+  }
+
+  // If we couldn't find the section by header, try to find it by data pattern
+  if (clockSectionStart === -1) {
+    console.log('Section header not found, scanning for clock patterns in data...');
+    // Look at first employee row for clock patterns
+    const firstEmployeeRow = data[10];
+    if (firstEmployeeRow && Array.isArray(firstEmployeeRow)) {
+      for (let col = 0; col < firstEmployeeRow.length; col++) {
+        const cellValue = String(firstEmployeeRow[col] || '');
+        // Look for patterns like "HH:MM - HH:MM" or "__ - __" or "HH:MM - __"
+        if (cellValue.match(/(\d{1,2}:\d{2}|_+)\s*-\s*(\d{1,2}:\d{2}|_+)/)) {
+          // Check if the date row at this column has a valid date
+          const dateStr = String(dateRow[col] || '');
+          if (dateStr.match(/\d{1,2}\s+\w+/)) {
+            clockSectionStart = col;
+            console.log(`Found clock section by pattern at column ${col}: "${cellValue}"`);
+            break;
+          }
+        }
+      }
+    }
+    
+    if (clockSectionStart !== -1) {
+      clockSectionEnd = clockSectionStart + 31; // Assume 31 days max
     }
   }
 
-  console.log('Clock section found:', clockSectionStart, 'to', clockSectionEnd);
+  if (clockSectionStart === -1) {
+    console.log('Could not find Clock-in / Clock-out section');
+    return result;
+  }
+
+  // Build a map of column index to normalized date string
+  const columnToDate = new Map<number, string>();
+  for (let col = clockSectionStart; col <= clockSectionEnd && col < dateRow.length; col++) {
+    const dateStr = String(dateRow[col] || '');
+    const dateMatch = dateStr.match(/(\d{1,2})\s+(\w+)/);
+    if (dateMatch) {
+      const day = parseInt(dateMatch[1], 10);
+      const monthStr = dateMatch[2];
+      const monthMap: Record<string, number> = {
+        'Oct': 10, 'Nov': 11, 'Dec': 12, 'Jan': 1, 'Feb': 2, 'Mar': 3,
+        'Apr': 4, 'May': 5, 'Jun': 6, 'Jul': 7, 'Aug': 8, 'Sep': 9
+      };
+      const month = monthMap[monthStr] || 10;
+      const normalizedDate = `${day.toString().padStart(2, '0')}/${month.toString().padStart(2, '0')}/2025`;
+      columnToDate.set(col, normalizedDate);
+    }
+  }
+  console.log(`Mapped ${columnToDate.size} columns to dates`);
 
   // Parse employee rows (starting from row 11, index 10)
   for (let rowIdx = 10; rowIdx < data.length; rowIdx++) {
@@ -123,51 +167,37 @@ export function parseOnlineExcel(file: ArrayBuffer): Map<string, Map<string, { c
     
     if (!lastName && !firstName) continue;
     
-    // Store multiple name variations for better matching
     const fullName = firstName ? `${firstName} ${lastName}`.trim() : lastName;
     const reverseName = firstName ? `${lastName} ${firstName}`.trim() : lastName;
     
     const employeeRecords = new Map<string, { clockIn: string | null; clockOut: string | null }>();
     
-    // Parse the clock-in/clock-out section columns
-    const startCol = clockSectionStart !== -1 ? clockSectionStart : 0;
-    const endCol = clockSectionEnd !== -1 ? clockSectionEnd : row.length;
-    
-    for (let col = startCol; col < Math.min(endCol, row.length); col++) {
+    // Parse each column in the clock section
+    for (const [col, normalizedDate] of columnToDate) {
+      if (col >= row.length) continue;
+      
       const cellValue = String(row[col] || '');
       
-      // Look for clock-in/clock-out pattern: "HH:MM - HH:MM" or "HH:MM - __" or "__ - HH:MM"
+      // Skip if it's not a clock pattern (could be "DO" for day off, or empty, or "8h 0m")
+      // Valid patterns: "HH:MM - HH:MM", "HH:MM - __", "__ - HH:MM", "__ - __"
       const clockPattern = cellValue.match(/(\d{1,2}:\d{2}|_+)\s*-\s*(\d{1,2}:\d{2}|_+)/);
       
       if (clockPattern) {
-        // Get the date from the date row at the same column
-        const dateStr = String(dateRow[col] || '');
-        const dateMatch = dateStr.match(/(\d{1,2})\s+(\w+),?\s*(\w+)?/);
+        const inPart = clockPattern[1];
+        const outPart = clockPattern[2];
         
-        if (dateMatch) {
-          const day = parseInt(dateMatch[1], 10);
-          const monthStr = dateMatch[2];
-          const monthMap: Record<string, number> = {
-            'Oct': 10, 'Nov': 11, 'Dec': 12, 'Jan': 1, 'Feb': 2, 'Mar': 3,
-            'Apr': 4, 'May': 5, 'Jun': 6, 'Jul': 7, 'Aug': 8, 'Sep': 9
-          };
-          const month = monthMap[monthStr] || 10;
-          const normalizedDate = `${day.toString().padStart(2, '0')}/${month.toString().padStart(2, '0')}/2025`;
-          
-          const clockIn = clockPattern[1].includes('_') ? null : extractTime(clockPattern[1]);
-          const clockOut = clockPattern[2].includes('_') ? null : extractTime(clockPattern[2]);
-          
-          if (clockIn || clockOut) {
-            // If we already have a record for this date, merge the times
-            const existing = employeeRecords.get(normalizedDate);
-            if (existing) {
-              // Get earliest clock-in and latest clock-out
-              const mergedIn = getEarlierTimeStr(existing.clockIn, clockIn);
-              const mergedOut = getLaterTimeStr(existing.clockOut, clockOut);
-              employeeRecords.set(normalizedDate, { clockIn: mergedIn, clockOut: mergedOut });
-            } else {
-              employeeRecords.set(normalizedDate, { clockIn, clockOut });
-            }
+        const clockIn = inPart.includes('_') ? null : extractTime(inPart);
+        const clockOut = outPart.includes('_') ? null : extractTime(outPart);
+        
+        if (clockIn || clockOut) {
+          // Merge with existing record for this date (get earliest in, latest out)
+          const existing = employeeRecords.get(normalizedDate);
+          if (existing) {
+            const mergedIn = getEarlierTimeStr(existing.clockIn, clockIn);
+            const mergedOut = getLaterTimeStr(existing.clockOut, clockOut);
+            employeeRecords.set(normalizedDate, { clockIn: mergedIn, clockOut: mergedOut });
+          } else {
+            employeeRecords.set(normalizedDate, { clockIn, clockOut });
           }
         }
       }
@@ -180,16 +210,17 @@ export function parseOnlineExcel(file: ArrayBuffer): Map<string, Map<string, { c
         result.set(reverseName.toLowerCase(), employeeRecords);
       }
       // Also store just first name and just last name for partial matching
-      if (firstName) {
+      if (firstName && firstName.length > 2) {
         result.set(firstName.toLowerCase(), employeeRecords);
       }
-      if (lastName) {
+      if (lastName && lastName.length > 2) {
         result.set(lastName.toLowerCase(), employeeRecords);
       }
-      console.log(`Online: ${fullName} (also: ${reverseName}, ${firstName}, ${lastName}) has ${employeeRecords.size} records`);
+      console.log(`Online: ${fullName} has ${employeeRecords.size} records. Sample dates: ${Array.from(employeeRecords.keys()).slice(0, 3).join(', ')}`);
     }
   }
 
+  console.log(`Total employees parsed from Online: ${result.size / 4} (with name variations: ${result.size})`);
   return result;
 }
 
