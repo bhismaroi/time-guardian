@@ -123,7 +123,9 @@ export function parseOnlineExcel(file: ArrayBuffer): Map<string, Map<string, { c
     
     if (!lastName && !firstName) continue;
     
+    // Store multiple name variations for better matching
     const fullName = firstName ? `${firstName} ${lastName}`.trim() : lastName;
+    const reverseName = firstName ? `${lastName} ${firstName}`.trim() : lastName;
     
     const employeeRecords = new Map<string, { clockIn: string | null; clockOut: string | null }>();
     
@@ -172,8 +174,19 @@ export function parseOnlineExcel(file: ArrayBuffer): Map<string, Map<string, { c
     }
     
     if (employeeRecords.size > 0) {
+      // Store under multiple name variations for better matching
       result.set(fullName.toLowerCase(), employeeRecords);
-      console.log(`Online: ${fullName} has ${employeeRecords.size} records`);
+      if (reverseName.toLowerCase() !== fullName.toLowerCase()) {
+        result.set(reverseName.toLowerCase(), employeeRecords);
+      }
+      // Also store just first name and just last name for partial matching
+      if (firstName) {
+        result.set(firstName.toLowerCase(), employeeRecords);
+      }
+      if (lastName) {
+        result.set(lastName.toLowerCase(), employeeRecords);
+      }
+      console.log(`Online: ${fullName} (also: ${reverseName}, ${firstName}, ${lastName}) has ${employeeRecords.size} records`);
     }
   }
 

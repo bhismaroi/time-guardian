@@ -50,23 +50,39 @@ export function compileAttendance(
       }
     }
 
-    // Try to find online data for this employee
+    // Try to find online data for this employee using multiple matching strategies
     // The online file uses "FirstName LastName" format, fingerprint uses full name
     let employeeOnlineData = onlineData.get(employee.name.toLowerCase());
     
-    // If not found, try partial matching
+    // If not found, try various matching strategies
     if (!employeeOnlineData) {
-      const nameParts = employee.name.toLowerCase().split(/\s+/);
-      for (const [onlineName, data] of onlineData) {
-        const onlineParts = onlineName.split(/\s+/);
-        // Check if any part matches
-        const matches = nameParts.some(part => 
-          onlineParts.some(op => op.includes(part) || part.includes(op))
-        );
-        if (matches) {
-          employeeOnlineData = data;
-          console.log(`Matched "${employee.name}" to online "${onlineName}"`);
+      const nameParts = employee.name.toLowerCase().split(/\s+/).filter(p => p.length > 2);
+      
+      // Strategy 1: Try each name part as a direct key
+      for (const part of nameParts) {
+        if (onlineData.has(part)) {
+          employeeOnlineData = onlineData.get(part);
+          console.log(`Matched "${employee.name}" to online via part "${part}"`);
           break;
+        }
+      }
+      
+      // Strategy 2: Try partial matching on the keys
+      if (!employeeOnlineData) {
+        for (const [onlineName, data] of onlineData) {
+          const onlineParts = onlineName.split(/\s+/).filter(p => p.length > 2);
+          
+          // Check if any significant part matches
+          const matchCount = nameParts.filter(part => 
+            onlineParts.some(op => op === part || op.includes(part) || part.includes(op))
+          ).length;
+          
+          // Require at least one good match
+          if (matchCount >= 1) {
+            employeeOnlineData = data;
+            console.log(`Matched "${employee.name}" to online "${onlineName}" (${matchCount} parts matched)`);
+            break;
+          }
         }
       }
     }
