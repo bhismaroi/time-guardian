@@ -1,7 +1,9 @@
 import { describe, expect, it } from 'vitest';
+import * as XLSX from 'xlsx';
 import { calculateAttendance } from '@/lib/attendanceCalculator';
 import { compileAttendance } from '@/lib/attendanceCompiler';
 import { buildAttendanceWorkbook } from '@/lib/excelGenerator';
+import { parseOnlineExcel } from '@/lib/excelParser';
 import type { RawFingerprintRecord } from '@/lib/types';
 
 describe('attendance calculations', () => {
@@ -27,6 +29,32 @@ describe('attendance calculations', () => {
 });
 
 describe('attendance compilation', () => {
+  it('parses the new block-style online workbook format', () => {
+    const rows: unknown[][] = [];
+    rows[1] = ['Report'];
+    rows[2] = ['Mar 1, 2026 - Mar 31, 2026'];
+    rows[6] = [null, 'Full name', 'Adi Misykatul'];
+    rows[7] = [null, 'Code', 'E-427'];
+    rows[8] = [null, 'Position', 'Staff'];
+    rows[9] = [null, 'Department', 'IDACT'];
+    rows[10] = [null, 'Location', 'Kantor Menara Astra'];
+    rows[11] = [null, 'Schedule', 'Template', 'Clock-in', 'Clock-out', 'Worked', 'Late', 'Overtime (non approved)', 'Early departure', 'Worked on day off'];
+    rows[12] = ['01 Mar, Su', 'DO', null, '-', '-', 0, 0, 0, 0, 0];
+    rows[13] = ['02 Mar, Mo', '08:00 - 16:30', null, '08:10', '18:10', 1, 0, 0, 0, 0];
+
+    const workbook = XLSX.utils.book_new();
+    const worksheet = XLSX.utils.aoa_to_sheet(rows);
+    XLSX.utils.book_append_sheet(workbook, worksheet, 'Sheet1');
+    const buffer = XLSX.write(workbook, { bookType: 'xlsx', type: 'array' });
+
+    const parsed = parseOnlineExcel(buffer);
+
+    expect(parsed.get('adi misykatul')?.get('2026-03-02')).toEqual({
+      clockIn: '08:10',
+      clockOut: '18:10',
+    });
+  });
+
   it('matches names using first and last name overlap and merges earliest/latest times', () => {
     const fingerprintRecords: RawFingerprintRecord[] = [
       {
@@ -94,10 +122,10 @@ describe('attendance compilation', () => {
 
     expect(workbook.SheetNames).toContain('Template');
     expect(workbook.SheetNames).toContain('Adi');
-    expect(sheet?.['A10']?.z).toBe('dd/mm');
-    expect(sheet?.['I10']?.f).toContain('H10-G10');
-    expect(sheet?.['I10']?.z).toBe('[h]:mm');
-    expect(sheet?.['L10']?.f).toContain('TIME(17,30,0)');
-    expect(sheet?.['L10']?.z).toBe('[h]:mm');
+    expect(sheet?.['A6']?.z).toBe('dd/mm');
+    expect(sheet?.['I6']?.f).toContain('H6-G6');
+    expect(sheet?.['I6']?.z).toBe('[h]:mm');
+    expect(sheet?.['L6']?.f).toContain('TIME(17,30,0)');
+    expect(sheet?.['L6']?.z).toBe('[h]:mm');
   });
 });

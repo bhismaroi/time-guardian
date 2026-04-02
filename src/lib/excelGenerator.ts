@@ -75,8 +75,7 @@ function buildRowMetadata(record: MergedAttendanceRecord): { shift: string; offi
 function buildSheetData(
   employee: CompiledEmployee,
   records: MergedAttendanceRecord[],
-  periodLabel: string,
-  includeEmployeeInfo: boolean
+  periodLabel: string
 ): XLSX.WorkSheet {
   const wsData: (string | number | null)[][] = [];
 
@@ -85,18 +84,6 @@ function buildSheetData(
   wsData.push(['', '', '', '', '', '', '', '', '', '', '', '', '']);
   wsData.push(['Date', 'Day', 'Kal', 'Shift', 'Office Hours', '', 'Actual In', 'Actual Out', 'Total Hours', 'Tardiness', 'Leave Earlier', 'Overtime', 'Remarks']);
   wsData.push(['', '', '', '', 'In', 'Out', '', '', '', '', '', '', '']);
-
-  if (includeEmployeeInfo) {
-    wsData.push([`Divisi : ${employee.division}`, '', '', '', '', '', '', '', '', '', '', '', '']);
-    wsData.push([`Departemen : ${employee.department}`, '', '', '', '', '', '', '', '', '', '', '', '']);
-    wsData.push([`Seksi : ${employee.section}`, '', '', '', '', '', '', '', '', '', '', '', '']);
-    wsData.push([`NIP : ${employee.nip}   Nama : ${employee.name}`, '', '', '', '', '', '', '', '', '', '', '', '']);
-  } else {
-    wsData.push(['Divisi : MITSUI OSK LINES', '', '', '', '', '', '', '', '', '', '', '', '']);
-    wsData.push(['', '', '', '', '', '', '', '', '', '', '', '', '']);
-    wsData.push(['', '', '', '', '', '', '', '', '', '', '', '', '']);
-    wsData.push(['', '', '', '', '', '', '', '', '', '', '', '', '']);
-  }
 
   for (const record of records) {
     const rowMeta = buildRowMetadata(record);
@@ -134,12 +121,8 @@ function buildSheetData(
     { s: { c: 10, r: 3 }, e: { c: 10, r: 4 } },
     { s: { c: 11, r: 3 }, e: { c: 11, r: 4 } },
     { s: { c: 12, r: 3 }, e: { c: 12, r: 4 } },
-    { s: { c: 0, r: 5 }, e: { c: 12, r: 5 } },
-    { s: { c: 0, r: 6 }, e: { c: 12, r: 6 } },
-    { s: { c: 0, r: 7 }, e: { c: 12, r: 7 } },
-    { s: { c: 0, r: 8 }, e: { c: 12, r: 8 } },
   ];
-  const dataStartRow = 10;
+  const dataStartRow = 6;
 
   records.forEach((record, index) => {
     const rowNumber = dataStartRow + index;
@@ -189,11 +172,11 @@ export function buildAttendanceWorkbook(employees: CompiledEmployee[]): XLSX.Wor
   const lastRecord = firstEmployee.records[firstEmployee.records.length - 1];
   const periodLabel = `${formatDateFull(firstRecord.date)} s/d  ${formatDateFull(lastRecord.date)}`;
 
-  const templateSheet = buildSheetData(firstEmployee, firstEmployee.records, periodLabel, false);
+  const templateSheet = buildSheetData(firstEmployee, firstEmployee.records, periodLabel);
   XLSX.utils.book_append_sheet(workbook, templateSheet, 'Template');
 
   for (const employee of employees) {
-    const sheet = buildSheetData(employee, employee.records, periodLabel, true);
+    const sheet = buildSheetData(employee, employee.records, periodLabel);
     XLSX.utils.book_append_sheet(workbook, sheet, employee.sheetName);
   }
 

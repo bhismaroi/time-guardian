@@ -14,8 +14,68 @@ import {
 
 type DailyClock = { clockIn: string | null; clockOut: string | null };
 
-function getCellValue(row: unknown[], index: number): string {
-  return normalizeWhitespace(String(row[index] ?? ''));
+const MONTH_LOOKUP: Record<string, number> = {
+  jan: 0,
+  january: 0,
+  feb: 1,
+  february: 1,
+  mar: 2,
+  march: 2,
+  apr: 3,
+  april: 3,
+  may: 4,
+  jun: 5,
+  june: 5,
+  jul: 6,
+  july: 6,
+  aug: 7,
+  august: 7,
+  sep: 8,
+  sept: 8,
+  september: 8,
+  oct: 9,
+  october: 9,
+  nov: 10,
+  november: 10,
+  dec: 11,
+  december: 11,
+};
+
+function parseReportContext(data: unknown[][]): { month: number; year: number } | null {
+  for (let rowIndex = 0; rowIndex < Math.min(data.length, 6); rowIndex++) {
+    const row = data[rowIndex];
+    if (!row) continue;
+
+    const text = row.map((cell) => String(cell ?? '')).join(' ');
+    const rangeMatch = text.match(/([A-Za-z]{3,9})\s+\d{1,2},\s*(\d{4})\s*-\s*[A-Za-z]{3,9}\s+\d{1,2},\s*(\d{4})/);
+    if (rangeMatch) {
+      const month = MONTH_LOOKUP[rangeMatch[1].toLowerCase()];
+      if (month !== undefined) {
+        return { month, year: Number(rangeMatch[2]) };
+      }
+    }
+
+    const singleMatch = text.match(/([A-Za-z]{3,9})\s+\d{1,2},\s*(\d{4})/);
+    if (singleMatch) {
+      const month = MONTH_LOOKUP[singleMatch[1].toLowerCase()];
+      if (month !== undefined) {
+        return { month, year: Number(singleMatch[2]) };
+      }
+    }
+  }
+
+  return null;
+}
+
+function parseDateFromLabel(label: string, year: number): string | null {
+  const match = label.match(/(\d{1,2})\s+([A-Za-z]{3,9})/);
+  if (!match) return null;
+
+  const day = Number(match[1]);
+  const month = MONTH_LOOKUP[match[2].toLowerCase()];
+  if (month === undefined) return null;
+
+  return formatDateIso(new Date(year, month, day));
 }
 
 function toDateKey(value: unknown): { date: Date; dateKey: string } | null {
@@ -112,6 +172,148 @@ function addAliases(
   }
 }
 
+function parseOnlineMatrixFormat(
+  data: unknown[][],
+  reportContext: { month: number; year: number } | null
+): Map<string, Map<string, { clockIn: string | null; clockOut: string | null }>> {
+  const result = new Map<string, Map<string, { clockIn: string | null; clockOut: string | null }>>();
+
+  const headerRowIndex = getHeaderRow(data, ['last name', 'first name']);
+  const dateRowIndex = headerRowIndex >= 0 ? headerRowIndex + 1 : 4;
+  const employeeStartRow = dateRowIndex + 1;
+  const dateRow = data[dateRowIndex];
+  if (!dateRow) return result;
+
+  const reportYear = reportContext?.year ?? new Date().getFullYear();
+  const columnToDateKey = new Map<number, string>();
+
+  for (let col = 2; col < dateRow.length; col++) {
+    const cell = String(dateRow[col] ?? '').trim();
+    const match = cell.match(/(\d{1,2})\s+([A-Za-z]{3,9})/);
+    if (!match) continue;
+
+    const day = Number(match[1]);
+    const month = MONTH_LOOKUP[match[2].toLowerCase()];
+    if (month === undefined) continue;
+
+    columnToDateKey.set(col, formatDateIso(new Date(reportYear, month, day)));
+  }
+
+  for (let rowIndex = employeeStartRow; rowIndex < data.length; rowIndex++) {
+    const row = data[rowIndex];
+    if (!row) continue;
+
+    const lastName = String(row[0] ?? '').trim();
+    const firstName = String(row[1] ?? '').trim();
+    if (!lastName && !firstName) continue;
+
+    const displayName = firstName ? `${firstName} ${lastName}`.trim() : lastName;
+    const reverseDisplayName = lastName ? `${lastName} ${firstName}`.trim() : firstName;
+
+    const employeeRecords = new Map<string, { clockIn: string | null; clockOut: string | null }>();
+
+    for (const [col, dateKey] of columnToDateKey) {
+      if (col >= row.length) continue;
+
+      const cellValue = String(row[col] ?? '').trim();
+      if (!cellValue || /^do$/i.test(cellValue) || /^off$/i.test(cellValue)) {
+        continue;
+      }
+
+      const match = cellValue.match(/(\d{1,2}:\d{2}|_+)\s*-\s*(\d{1,2}:\d{2}|_+)/);
+      if (!match) continue;
+
+      const clockIn = match[1].includes('_') ? null : extractTime(match[1]);
+      const clockOut = match[2].includes('_') ? null : extractTime(match[2]);
+
+      if (!clockIn && !clockOut) continue;
+
+      const next = { clockIn, clockOut };
+      const existing = employeeRecords.get(dateKey);
+      employeeRecords.set(dateKey, mergeClock(existing, next));
+    }
+
+    if (employeeRecords.size === 0) continue;
+
+    addAliases(result, displayName, employeeRecords);
+    addAliases(result, reverseDisplayName, employeeRecords);
+    addAliases(result, firstName, employeeRecords);
+    addAliases(result, lastName, employeeRecords);
+  }
+
+  return result;
+}
+
+function parseOnlineBlockFormat(
+  data: unknown[][],
+  reportContext: { month: number; year: number } | null
+): Map<string, Map<string, { clockIn: string | null; clockOut: string | null }>> {
+  const result = new Map<string, Map<string, { clockIn: string | null; clockOut: string | null }>>();
+  const reportYear = reportContext?.year ?? new Date().getFullYear();
+  const reportMonth = reportContext?.month ?? new Date().getMonth();
+
+  for (let rowIndex = 0; rowIndex < data.length; rowIndex++) {
+    const row = data[rowIndex];
+    if (!row) continue;
+
+    const label = String(row[1] ?? '').trim();
+    if (normalizeName(label) !== 'full name') continue;
+
+    const employeeName = String(row[2] ?? '').trim();
+    if (!employeeName) continue;
+
+    let headerRowIndex = -1;
+    for (let probe = rowIndex + 1; probe < Math.min(rowIndex + 10, data.length); probe++) {
+      const probeRow = data[probe];
+      if (!probeRow) continue;
+      const probeLabel = normalizeName(String(probeRow[1] ?? ''));
+      if (probeLabel === 'schedule') {
+        headerRowIndex = probe;
+        break;
+      }
+    }
+
+    if (headerRowIndex === -1) continue;
+
+    const employeeRecords = new Map<string, { clockIn: string | null; clockOut: string | null }>();
+    const startRow = headerRowIndex + 1;
+
+    for (let dayRow = startRow; dayRow < data.length; dayRow++) {
+      const current = data[dayRow];
+      if (!current) continue;
+
+      const currentMarker = normalizeName(String(current[1] ?? ''));
+      if (currentMarker === 'full name') {
+        break;
+      }
+
+      const dateLabel = String(current[0] ?? '').trim();
+      if (!dateLabel) {
+        if (String(current[1] ?? '').trim() === '') {
+          continue;
+        }
+        continue;
+      }
+
+      const dateKey = parseDateFromLabel(dateLabel, reportYear);
+      if (!dateKey) continue;
+      const clockIn = extractTime(String(current[3] ?? ''));
+      const clockOut = extractTime(String(current[4] ?? ''));
+
+      if (!clockIn && !clockOut) continue;
+
+      const existing = employeeRecords.get(dateKey);
+      employeeRecords.set(dateKey, mergeClock(existing, { clockIn, clockOut }));
+    }
+
+    if (employeeRecords.size === 0) continue;
+
+    addAliases(result, employeeName, employeeRecords);
+  }
+
+  return result;
+}
+
 /**
  * Parse the Fingerprint Excel file.
  */
@@ -193,101 +395,14 @@ export function parseOnlineExcel(
   const worksheet = workbook.Sheets[sheetName];
   const data = XLSX.utils.sheet_to_json<unknown[]>(worksheet, { header: 1 }) as unknown[][];
 
-  const result = new Map<string, Map<string, { clockIn: string | null; clockOut: string | null }>>();
-  if (data.length === 0) return result;
+  if (data.length === 0) return new Map();
 
-  const headerRowIndex = getHeaderRow(data, ['last name', 'first name']);
-  const dateRowIndex = headerRowIndex >= 0 ? headerRowIndex + 1 : 4;
-  const employeeStartRow = dateRowIndex + 1;
+  const reportContext = parseReportContext(data);
+  const isBlockFormat = data.some((row) => normalizeName(String(row?.[1] ?? '')) === 'full name');
 
-  const dateRow = data[dateRowIndex];
-  if (!dateRow) return result;
-
-  const columnToDateKey = new Map<number, string>();
-  for (let col = 2; col < dateRow.length; col++) {
-    const cell = String(dateRow[col] ?? '').trim();
-    const match = cell.match(/(\d{1,2})\s+([A-Za-z]{3,9})/);
-    if (!match) continue;
-
-    const day = Number(match[1]);
-    const month = match[2].toLowerCase();
-    const monthIndex: Record<string, number> = {
-      jan: 0,
-      january: 0,
-      feb: 1,
-      february: 1,
-      mar: 2,
-      march: 2,
-      apr: 3,
-      april: 3,
-      may: 4,
-      jun: 5,
-      june: 5,
-      jul: 6,
-      july: 6,
-      aug: 7,
-      august: 7,
-      sep: 8,
-      sept: 8,
-      september: 8,
-      oct: 9,
-      october: 9,
-      nov: 10,
-      november: 10,
-      dec: 11,
-      december: 11,
-    };
-
-    const monthIndexValue = monthIndex[month];
-    if (monthIndexValue === undefined) continue;
-
-    const date = new Date(2025, monthIndexValue, day);
-    columnToDateKey.set(col, formatDateIso(date));
-  }
-
-  for (let rowIndex = employeeStartRow; rowIndex < data.length; rowIndex++) {
-    const row = data[rowIndex];
-    if (!row) continue;
-
-    const lastName = String(row[0] ?? '').trim();
-    const firstName = String(row[1] ?? '').trim();
-    if (!lastName && !firstName) continue;
-
-    const displayName = firstName ? `${firstName} ${lastName}`.trim() : lastName;
-    const reverseDisplayName = lastName ? `${lastName} ${firstName}`.trim() : firstName;
-
-    const employeeRecords = new Map<string, { clockIn: string | null; clockOut: string | null }>();
-
-    for (const [col, dateKey] of columnToDateKey) {
-      if (col >= row.length) continue;
-
-      const cellValue = String(row[col] ?? '').trim();
-      if (!cellValue || /^do$/i.test(cellValue) || /^off$/i.test(cellValue)) {
-        continue;
-      }
-
-      const match = cellValue.match(/(\d{1,2}:\d{2}|_+)\s*-\s*(\d{1,2}:\d{2}|_+)/);
-      if (!match) continue;
-
-      const clockIn = match[1].includes('_') ? null : extractTime(match[1]);
-      const clockOut = match[2].includes('_') ? null : extractTime(match[2]);
-
-      if (!clockIn && !clockOut) continue;
-
-      const next = { clockIn, clockOut };
-      const existing = employeeRecords.get(dateKey);
-      employeeRecords.set(dateKey, mergeClock(existing, next));
-    }
-
-    if (employeeRecords.size === 0) continue;
-
-    addAliases(result, displayName, employeeRecords);
-    addAliases(result, reverseDisplayName, employeeRecords);
-    addAliases(result, firstName, employeeRecords);
-    addAliases(result, lastName, employeeRecords);
-  }
-
-  return result;
+  return isBlockFormat
+    ? parseOnlineBlockFormat(data, reportContext)
+    : parseOnlineMatrixFormat(data, reportContext);
 }
 
 /**
