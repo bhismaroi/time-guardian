@@ -23,9 +23,12 @@ export interface RawFingerprintRecord {
   empNo: string;
   name: string;
   date: string;
+  dateKey: string;
   workingHours: string;
-  actualIn: string;
-  actualOut: string;
+  clockIn: string | null;
+  clockOut: string | null;
+  actualIn: string | null;
+  actualOut: string | null;
 }
 
 export interface RawOnlineRecord {
@@ -55,6 +58,7 @@ export interface MergedAttendanceRecord {
 export interface CompiledEmployee {
   empNo: string;
   name: string;
+  sheetName: string;
   nip: string;
   division: string;
   department: string;

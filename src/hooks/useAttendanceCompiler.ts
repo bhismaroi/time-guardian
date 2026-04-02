@@ -55,8 +55,11 @@ export function useAttendanceCompiler() {
     if (compiledData.length === 0) return;
 
     const blob = generateAttendanceExcel(compiledData);
-    const now = new Date();
-    const filename = `Compiled_Attendance_${now.toISOString().slice(0, 10)}.xlsx`;
+    const firstDate = compiledData[0]?.records[0]?.date;
+    const periodTag = firstDate
+      ? `${firstDate.getFullYear()}-${String(firstDate.getMonth() + 1).padStart(2, '0')}`
+      : new Date().toISOString().slice(0, 10);
+    const filename = `Compiled_Attendance_${periodTag}.xlsx`;
     downloadExcel(blob, filename);
   }, [compiledData]);
 

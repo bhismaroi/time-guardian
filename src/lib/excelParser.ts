@@ -2,10 +2,118 @@
 
 import * as XLSX from 'xlsx';
 import type { RawFingerprintRecord } from './types';
-import { extractTime } from './timeUtils';
+import {
+  extractNameParts,
+  extractTime,
+  formatDateIso,
+  normalizeName,
+  normalizeWhitespace,
+  parseDate,
+  parseTimeToMinutes,
+} from './timeUtils';
+
+type DailyClock = { clockIn: string | null; clockOut: string | null };
+
+function getCellValue(row: unknown[], index: number): string {
+  return normalizeWhitespace(String(row[index] ?? ''));
+}
+
+function toDateKey(value: unknown): { date: Date; dateKey: string } | null {
+  if (value === null || value === undefined || value === '') return null;
+
+  if (typeof value === 'number' && Number.isFinite(value)) {
+    const parsed = XLSX.SSF.parse_date_code(value);
+    if (!parsed) return null;
+    const date = new Date(parsed.y, parsed.m - 1, parsed.d);
+    return { date, dateKey: formatDateIso(date) };
+  }
+
+  const stringValue = normalizeWhitespace(String(value));
+  if (!stringValue) return null;
+
+  const parsed = parseDate(stringValue, new Date().getFullYear());
+  if (!parsed) return null;
+
+  return { date: parsed, dateKey: formatDateIso(parsed) };
+}
+
+function pickTimeCell(row: unknown[], headers: string[], candidates: string[]): string | null {
+  for (const candidate of candidates) {
+    const index = headers.findIndex((header) => header.includes(candidate));
+    if (index !== -1) {
+      const raw = String(row[index] ?? '');
+      const time = extractTime(raw);
+      if (time) return time;
+    }
+  }
+  return null;
+}
+
+function mergeClock(existing: DailyClock | undefined, next: DailyClock): DailyClock {
+  if (!existing) return next;
+
+  const mergedIn = getEarlierTime(existing.clockIn, next.clockIn);
+  const mergedOut = getLaterTime(existing.clockOut, next.clockOut);
+
+  return { clockIn: mergedIn, clockOut: mergedOut };
+}
+
+function getEarlierTime(time1: string | null, time2: string | null): string | null {
+  const min1 = parseTimeToMinutes(time1);
+  const min2 = parseTimeToMinutes(time2);
+
+  if (min1 === null && min2 === null) return null;
+  if (min1 === null) return time2;
+  if (min2 === null) return time1;
+  return min1 <= min2 ? time1 : time2;
+}
+
+function getLaterTime(time1: string | null, time2: string | null): string | null {
+  const min1 = parseTimeToMinutes(time1);
+  const min2 = parseTimeToMinutes(time2);
+
+  if (min1 === null && min2 === null) return null;
+  if (min1 === null) return time2;
+  if (min2 === null) return time1;
+  return min1 >= min2 ? time1 : time2;
+}
+
+function getHeaderRow(data: unknown[][], labels: string[]): number {
+  for (let rowIndex = 0; rowIndex < Math.min(data.length, 12); rowIndex++) {
+    const row = data[rowIndex];
+    if (!row) continue;
+    const normalized = row.map((cell) => normalizeName(String(cell ?? '')));
+    if (labels.every((label) => normalized.some((value) => value.includes(label)))) {
+      return rowIndex;
+    }
+  }
+  return -1;
+}
+
+function addAliases(
+  store: Map<string, Map<string, DailyClock>>,
+  aliasSource: string,
+  records: Map<string, DailyClock>
+): void {
+  const normalized = normalizeName(aliasSource);
+  if (!normalized) return;
+
+  const parts = extractNameParts(normalized);
+  const aliases = new Set<string>([
+    normalized,
+    parts.join(' '),
+    parts.slice().reverse().join(' '),
+    ...parts,
+  ]);
+
+  for (const alias of aliases) {
+    if (!alias) continue;
+    store.set(alias, records);
+  }
+}
 
 /**
- * Parse the Fingerprint Excel file
+ * Parse the Fingerprint Excel file.
  */
 export function parseFingerprintExcel(file: ArrayBuffer): RawFingerprintRecord[] {
   const workbook = XLSX.read(file, { type: 'array' });
@@ -13,38 +121,61 @@ export function parseFingerprintExcel(file: ArrayBuffer): RawFingerprintRecord[]
   const worksheet = workbook.Sheets[sheetName];
   const data = XLSX.utils.sheet_to_json<unknown[]>(worksheet, { header: 1 }) as unknown[][];
 
+  if (data.length === 0) return [];
+
+  const headerRow = data[0].map((cell) => normalizeName(String(cell ?? '')));
+  const columnIndex = {
+    empNo: Math.max(headerRow.findIndex((header) => header.includes('emp no')), 0),
+    name: Math.max(headerRow.findIndex((header) => header === 'name'), 3),
+    date: Math.max(headerRow.findIndex((header) => header.includes('date')), 5),
+    workingHours: Math.max(headerRow.findIndex((header) => header.includes('working hours')), 6),
+    clockIn: Math.max(
+      headerRow.findIndex((header) => header.includes('actual in')),
+      headerRow.findIndex((header) => header.includes('clock in'))
+    ),
+    clockOut: Math.max(
+      headerRow.findIndex((header) => header.includes('actual out')),
+      headerRow.findIndex((header) => header.includes('clock out'))
+    ),
+  };
+
   const records: RawFingerprintRecord[] = [];
 
-  // Skip header row (first row)
-  for (let i = 1; i < data.length; i++) {
-    const row = data[i];
-    if (!row || !Array.isArray(row) || row.length < 10) continue;
+  for (let rowIndex = 1; rowIndex < data.length; rowIndex++) {
+    const row = data[rowIndex];
+    if (!row) continue;
 
-    const empNo = String(row[0] || '');
-    const name = String(row[3] || '').trim();
-    const dateValue = row[5];
-    const workingHours = String(row[6] || '');
-    const actualIn = String(row[9] || '');
-    const actualOut = String(row[10] || '');
+    const empNo = String(row[columnIndex.empNo] ?? '').trim();
+    const name = String(row[columnIndex.name] ?? '').trim();
+    const dateValue = row[columnIndex.date];
+    const workingHours = String(row[columnIndex.workingHours] ?? '').trim();
 
     if (!name || !dateValue) continue;
 
-    // Parse date - could be a number (Excel date) or string
-    let dateStr = '';
-    if (typeof dateValue === 'number') {
-      const date = XLSX.SSF.parse_date_code(dateValue);
-      dateStr = `${date.d.toString().padStart(2, '0')}/${(date.m).toString().padStart(2, '0')}/${date.y}`;
-    } else {
-      dateStr = String(dateValue);
-    }
+    const parsedDate = toDateKey(dateValue);
+    if (!parsedDate) continue;
+
+    const rawClockIn = columnIndex.clockIn >= 0 ? String(row[columnIndex.clockIn] ?? '') : '';
+    const rawClockOut = columnIndex.clockOut >= 0 ? String(row[columnIndex.clockOut] ?? '') : '';
+    const fallbackClockIn = pickTimeCell(row, headerRow, ['actual in', 'clock in time', 'clock in']);
+    const fallbackClockOut = pickTimeCell(row, headerRow, ['actual out', 'clock out time', 'clock out']);
+
+    const actualIn = extractTime(rawClockIn) ?? fallbackClockIn;
+    const actualOut = extractTime(rawClockOut) ?? fallbackClockOut;
+
+    const clockIn = extractTime(rawClockIn) ?? extractTime(String(row[7] ?? '')) ?? actualIn;
+    const clockOut = extractTime(rawClockOut) ?? extractTime(String(row[8] ?? '')) ?? actualOut;
 
     records.push({
       empNo,
       name,
-      date: dateStr,
+      date: formatDateIso(parsedDate.date),
+      dateKey: parsedDate.dateKey,
       workingHours,
-      actualIn: extractTime(actualIn) || '',
-      actualOut: extractTime(actualOut) || '',
+      clockIn,
+      clockOut,
+      actualIn,
+      actualOut,
     });
   }
 
@@ -52,246 +183,143 @@ export function parseFingerprintExcel(file: ArrayBuffer): RawFingerprintRecord[]
 }
 
 /**
- * Parse the Online Excel file
- * Structure:
- * - Row 9 (index 8): Section headers including "Clock-in / Clock-out"
- * - Row 10 (index 9): Date headers like "01 Oct, We", "02 Oct, Th"
- * - Row 11+ (index 10+): Employee data with clock times in format "HH:MM - HH:MM" or "HH:MM - __" or "__ - HH:MM"
+ * Parse the Online Excel file.
  */
-export function parseOnlineExcel(file: ArrayBuffer): Map<string, Map<string, { clockIn: string | null; clockOut: string | null }>> {
+export function parseOnlineExcel(
+  file: ArrayBuffer
+): Map<string, Map<string, { clockIn: string | null; clockOut: string | null }>> {
   const workbook = XLSX.read(file, { type: 'array' });
   const sheetName = workbook.SheetNames[0];
   const worksheet = workbook.Sheets[sheetName];
   const data = XLSX.utils.sheet_to_json<unknown[]>(worksheet, { header: 1 }) as unknown[][];
 
-  // Result: Map<employeeName, Map<dateStr, {clockIn, clockOut}>>
   const result = new Map<string, Map<string, { clockIn: string | null; clockOut: string | null }>>();
+  if (data.length === 0) return result;
 
-  // Find the header row with section names (row 9, index 8)
-  const sectionHeaderRow = data[8];
-  // Find the date row (row 10, index 9)
-  const dateRow = data[9];
-  
-  if (!dateRow || !Array.isArray(dateRow)) {
-    console.log('No date row found at index 9');
-    return result;
-  }
-  if (!sectionHeaderRow || !Array.isArray(sectionHeaderRow)) {
-    console.log('No section header row found at index 8');
-    return result;
-  }
+  const headerRowIndex = getHeaderRow(data, ['last name', 'first name']);
+  const dateRowIndex = headerRowIndex >= 0 ? headerRowIndex + 1 : 4;
+  const employeeStartRow = dateRowIndex + 1;
 
-  // Find the "Clock-in / Clock-out" section by scanning the section header row
-  let clockSectionStart = -1;
-  let clockSectionEnd = -1;
-  
-  for (let col = 0; col < sectionHeaderRow.length; col++) {
-    const header = String(sectionHeaderRow[col] || '').toLowerCase();
-    if (header.includes('clock-in') && header.includes('clock-out')) {
-      clockSectionStart = col;
-      console.log(`Found "Clock-in / Clock-out" section at column ${col}`);
-      break;
-    }
-  }
+  const dateRow = data[dateRowIndex];
+  if (!dateRow) return result;
 
-  // If we found the section header, find where it ends (next non-empty header that's not part of dates)
-  if (clockSectionStart !== -1) {
-    // Count consecutive date columns starting from clockSectionStart
-    for (let col = clockSectionStart; col < Math.min(clockSectionStart + 35, dateRow.length); col++) {
-      const dateStr = String(dateRow[col] || '');
-      // Check if this column has a date pattern like "01 Oct, We"
-      if (dateStr.match(/\d{1,2}\s+\w+,\s*\w+/)) {
-        clockSectionEnd = col + 1;
-      }
-    }
-    console.log(`Clock section spans columns ${clockSectionStart} to ${clockSectionEnd}`);
-  }
+  const columnToDateKey = new Map<number, string>();
+  for (let col = 2; col < dateRow.length; col++) {
+    const cell = String(dateRow[col] ?? '').trim();
+    const match = cell.match(/(\d{1,2})\s+([A-Za-z]{3,9})/);
+    if (!match) continue;
 
-  // If we couldn't find the section by header, try to find it by data pattern
-  if (clockSectionStart === -1) {
-    console.log('Section header not found, scanning for clock patterns in data...');
-    // Look at first employee row for clock patterns
-    const firstEmployeeRow = data[10];
-    if (firstEmployeeRow && Array.isArray(firstEmployeeRow)) {
-      for (let col = 0; col < firstEmployeeRow.length; col++) {
-        const cellValue = String(firstEmployeeRow[col] || '');
-        // Look for patterns like "HH:MM - HH:MM" or "__ - __" or "HH:MM - __"
-        if (cellValue.match(/(\d{1,2}:\d{2}|_+)\s*-\s*(\d{1,2}:\d{2}|_+)/)) {
-          // Check if the date row at this column has a valid date
-          const dateStr = String(dateRow[col] || '');
-          if (dateStr.match(/\d{1,2}\s+\w+/)) {
-            clockSectionStart = col;
-            console.log(`Found clock section by pattern at column ${col}: "${cellValue}"`);
-            break;
-          }
-        }
-      }
-    }
-    
-    if (clockSectionStart !== -1) {
-      clockSectionEnd = clockSectionStart + 31; // Assume 31 days max
-    }
+    const day = Number(match[1]);
+    const month = match[2].toLowerCase();
+    const monthIndex: Record<string, number> = {
+      jan: 0,
+      january: 0,
+      feb: 1,
+      february: 1,
+      mar: 2,
+      march: 2,
+      apr: 3,
+      april: 3,
+      may: 4,
+      jun: 5,
+      june: 5,
+      jul: 6,
+      july: 6,
+      aug: 7,
+      august: 7,
+      sep: 8,
+      sept: 8,
+      september: 8,
+      oct: 9,
+      october: 9,
+      nov: 10,
+      november: 10,
+      dec: 11,
+      december: 11,
+    };
+
+    const monthIndexValue = monthIndex[month];
+    if (monthIndexValue === undefined) continue;
+
+    const date = new Date(2025, monthIndexValue, day);
+    columnToDateKey.set(col, formatDateIso(date));
   }
 
-  if (clockSectionStart === -1) {
-    console.log('Could not find Clock-in / Clock-out section');
-    return result;
-  }
+  for (let rowIndex = employeeStartRow; rowIndex < data.length; rowIndex++) {
+    const row = data[rowIndex];
+    if (!row) continue;
 
-  // Build a map of column index to normalized date string
-  const columnToDate = new Map<number, string>();
-  for (let col = clockSectionStart; col <= clockSectionEnd && col < dateRow.length; col++) {
-    const dateStr = String(dateRow[col] || '');
-    const dateMatch = dateStr.match(/(\d{1,2})\s+(\w+)/);
-    if (dateMatch) {
-      const day = parseInt(dateMatch[1], 10);
-      const monthStr = dateMatch[2];
-      const monthMap: Record<string, number> = {
-        'Oct': 10, 'Nov': 11, 'Dec': 12, 'Jan': 1, 'Feb': 2, 'Mar': 3,
-        'Apr': 4, 'May': 5, 'Jun': 6, 'Jul': 7, 'Aug': 8, 'Sep': 9
-      };
-      const month = monthMap[monthStr] || 10;
-      const normalizedDate = `${day.toString().padStart(2, '0')}/${month.toString().padStart(2, '0')}/2025`;
-      columnToDate.set(col, normalizedDate);
-    }
-  }
-  console.log(`Mapped ${columnToDate.size} columns to dates`);
-
-  // Parse employee rows (starting from row 11, index 10)
-  for (let rowIdx = 10; rowIdx < data.length; rowIdx++) {
-    const row = data[rowIdx];
-    if (!row || !Array.isArray(row) || row.length < 3) continue;
-
-    const lastName = String(row[0] || '').trim();
-    const firstName = String(row[1] || '').trim();
-    
+    const lastName = String(row[0] ?? '').trim();
+    const firstName = String(row[1] ?? '').trim();
     if (!lastName && !firstName) continue;
-    
-    const fullName = firstName ? `${firstName} ${lastName}`.trim() : lastName;
-    const reverseName = firstName ? `${lastName} ${firstName}`.trim() : lastName;
-    
+
+    const displayName = firstName ? `${firstName} ${lastName}`.trim() : lastName;
+    const reverseDisplayName = lastName ? `${lastName} ${firstName}`.trim() : firstName;
+
     const employeeRecords = new Map<string, { clockIn: string | null; clockOut: string | null }>();
-    
-    // Parse each column in the clock section
-    for (const [col, normalizedDate] of columnToDate) {
+
+    for (const [col, dateKey] of columnToDateKey) {
       if (col >= row.length) continue;
-      
-      const cellValue = String(row[col] || '');
-      
-      // Skip if it's not a clock pattern (could be "DO" for day off, or empty, or "8h 0m")
-      // Valid patterns: "HH:MM - HH:MM", "HH:MM - __", "__ - HH:MM", "__ - __"
-      const clockPattern = cellValue.match(/(\d{1,2}:\d{2}|_+)\s*-\s*(\d{1,2}:\d{2}|_+)/);
-      
-      if (clockPattern) {
-        const inPart = clockPattern[1];
-        const outPart = clockPattern[2];
-        
-        const clockIn = inPart.includes('_') ? null : extractTime(inPart);
-        const clockOut = outPart.includes('_') ? null : extractTime(outPart);
-        
-        if (clockIn || clockOut) {
-          // Merge with existing record for this date (get earliest in, latest out)
-          const existing = employeeRecords.get(normalizedDate);
-          if (existing) {
-            const mergedIn = getEarlierTimeStr(existing.clockIn, clockIn);
-            const mergedOut = getLaterTimeStr(existing.clockOut, clockOut);
-            employeeRecords.set(normalizedDate, { clockIn: mergedIn, clockOut: mergedOut });
-          } else {
-            employeeRecords.set(normalizedDate, { clockIn, clockOut });
-          }
-        }
+
+      const cellValue = String(row[col] ?? '').trim();
+      if (!cellValue || /^do$/i.test(cellValue) || /^off$/i.test(cellValue)) {
+        continue;
       }
+
+      const match = cellValue.match(/(\d{1,2}:\d{2}|_+)\s*-\s*(\d{1,2}:\d{2}|_+)/);
+      if (!match) continue;
+
+      const clockIn = match[1].includes('_') ? null : extractTime(match[1]);
+      const clockOut = match[2].includes('_') ? null : extractTime(match[2]);
+
+      if (!clockIn && !clockOut) continue;
+
+      const next = { clockIn, clockOut };
+      const existing = employeeRecords.get(dateKey);
+      employeeRecords.set(dateKey, mergeClock(existing, next));
     }
-    
-    if (employeeRecords.size > 0) {
-      // Store under multiple name variations for better matching
-      result.set(fullName.toLowerCase(), employeeRecords);
-      if (reverseName.toLowerCase() !== fullName.toLowerCase()) {
-        result.set(reverseName.toLowerCase(), employeeRecords);
-      }
-      // Also store just first name and just last name for partial matching
-      if (firstName && firstName.length > 2) {
-        result.set(firstName.toLowerCase(), employeeRecords);
-      }
-      if (lastName && lastName.length > 2) {
-        result.set(lastName.toLowerCase(), employeeRecords);
-      }
-      console.log(`Online: ${fullName} has ${employeeRecords.size} records. Sample dates: ${Array.from(employeeRecords.keys()).slice(0, 3).join(', ')}`);
-    }
+
+    if (employeeRecords.size === 0) continue;
+
+    addAliases(result, displayName, employeeRecords);
+    addAliases(result, reverseDisplayName, employeeRecords);
+    addAliases(result, firstName, employeeRecords);
+    addAliases(result, lastName, employeeRecords);
   }
 
-  console.log(`Total employees parsed from Online: ${result.size / 4} (with name variations: ${result.size})`);
   return result;
 }
 
 /**
- * Helper to get earlier time (for clock-in)
- */
-function getEarlierTimeStr(time1: string | null, time2: string | null): string | null {
-  if (!time1) return time2;
-  if (!time2) return time1;
-  const min1 = parseTimeToMinutes(time1);
-  const min2 = parseTimeToMinutes(time2);
-  if (min1 === null) return time2;
-  if (min2 === null) return time1;
-  return min1 <= min2 ? time1 : time2;
-}
-
-/**
- * Helper to get later time (for clock-out)
- */
-function getLaterTimeStr(time1: string | null, time2: string | null): string | null {
-  if (!time1) return time2;
-  if (!time2) return time1;
-  const min1 = parseTimeToMinutes(time1);
-  const min2 = parseTimeToMinutes(time2);
-  if (min1 === null) return time2;
-  if (min2 === null) return time1;
-  return min1 >= min2 ? time1 : time2;
-}
-
-/**
- * Parse time string to minutes (local helper)
- */
-function parseTimeToMinutes(time: string | null): number | null {
-  if (!time) return null;
-  const parts = time.split(':');
-  if (parts.length < 2) return null;
-  const hours = parseInt(parts[0], 10);
-  const minutes = parseInt(parts[1], 10);
-  if (isNaN(hours) || isNaN(minutes)) return null;
-  return hours * 60 + minutes;
-}
-
-/**
- * Get unique employees from fingerprint records
+ * Get unique employees from fingerprint records.
  */
 export function getUniqueEmployees(records: RawFingerprintRecord[]): { empNo: string; name: string }[] {
   const seen = new Map<string, { empNo: string; name: string }>();
-  
+
   for (const record of records) {
-    if (!seen.has(record.name.toLowerCase())) {
-      seen.set(record.name.toLowerCase(), {
+    const key = normalizeName(record.name);
+    if (!seen.has(key)) {
+      seen.set(key, {
         empNo: record.empNo,
         name: record.name,
       });
     }
   }
-  
+
   return Array.from(seen.values());
 }
 
 /**
- * Get all dates from a month
+ * Get all dates from a month.
  */
 export function getMonthDates(year: number, month: number): Date[] {
   const dates: Date[] = [];
   const firstDay = new Date(year, month, 1);
   const lastDay = new Date(year, month + 1, 0);
-  
-  for (let d = new Date(firstDay); d <= lastDay; d.setDate(d.getDate() + 1)) {
-    dates.push(new Date(d));
+
+  for (let date = new Date(firstDay); date <= lastDay; date.setDate(date.getDate() + 1)) {
+    dates.push(new Date(date));
   }
-  
+
   return dates;
 }
