@@ -1,5 +1,4 @@
 import { describe, expect, it } from 'vitest';
-import * as XLSX from 'xlsx';
 import { calculateAttendance } from '@/lib/attendanceCalculator';
 import { compileAttendance } from '@/lib/attendanceCompiler';
 import { buildAttendanceWorkbook } from '@/lib/excelGenerator';
@@ -91,13 +90,14 @@ describe('attendance compilation', () => {
     );
 
     const workbook = buildAttendanceWorkbook(compiled);
-    const buffer = XLSX.write(workbook, { bookType: 'xlsx', type: 'array' });
-    const parsedWorkbook = XLSX.read(buffer, { type: 'array', cellFormula: true });
-    const sheet = parsedWorkbook.Sheets['Adi'];
+    const sheet = workbook.Sheets['Adi'];
 
-    expect(parsedWorkbook.SheetNames).toContain('Template');
-    expect(parsedWorkbook.SheetNames).toContain('Adi');
+    expect(workbook.SheetNames).toContain('Template');
+    expect(workbook.SheetNames).toContain('Adi');
+    expect(sheet?.['A10']?.z).toBe('dd/mm');
     expect(sheet?.['I10']?.f).toContain('H10-G10');
+    expect(sheet?.['I10']?.z).toBe('[h]:mm');
     expect(sheet?.['L10']?.f).toContain('TIME(17,30,0)');
+    expect(sheet?.['L10']?.z).toBe('[h]:mm');
   });
 });

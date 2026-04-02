@@ -20,6 +20,9 @@ const COLUMN_WIDTHS = [
   { wch: 10 },
 ];
 
+const DATE_DISPLAY_FORMAT = 'dd/mm';
+const TIME_DISPLAY_FORMAT = '[h]:mm';
+
 function toFormulaFraction(value: string | null | undefined): number | null {
   const minutes = parseTimeToMinutes(value);
   if (minutes === null) return null;
@@ -47,14 +50,14 @@ function buildOvertimeFormula(row: number): string {
   return `=IF(H${row}="","",MAX(0,H${row}-IF(WEEKDAY(A${row},2)=5,TIME(18,0,0),TIME(17,30,0))))`;
 }
 
-function makeFormulaCell(formula: string, cachedValue: number | string | null): XLSX.CellObject {
+function makeFormulaCell(formula: string, cachedValue: number | string | null, numberFormat?: string): XLSX.CellObject {
   if (cachedValue === null || cachedValue === undefined || cachedValue === '') {
-    return { f: formula };
+    return numberFormat ? { f: formula, z: numberFormat } : { f: formula };
   }
 
   return typeof cachedValue === 'number'
-    ? { f: formula, v: cachedValue, t: 'n' }
-    : { f: formula, v: cachedValue, t: 's' };
+    ? { f: formula, v: cachedValue, t: 'n', z: numberFormat }
+    : { f: formula, v: cachedValue, t: 's', z: numberFormat };
 }
 
 function buildRowMetadata(record: MergedAttendanceRecord): { shift: string; officeIn: string; officeOut: string } {
@@ -150,14 +153,14 @@ function buildSheetData(
     const leaveEarlierValue = toFormulaFraction(record.leaveEarlier);
     const overtimeValue = toFormulaFraction(record.overtime);
 
-    ws[totalHoursCell] = makeFormulaCell(buildTotalHoursFormula(rowNumber), totalHoursValue);
-    ws[tardinessCell] = makeFormulaCell(buildTardinessFormula(rowNumber), tardinessValue);
-    ws[leaveEarlierCell] = makeFormulaCell(buildLeaveEarlierFormula(rowNumber), leaveEarlierValue);
-    ws[overtimeCell] = makeFormulaCell(buildOvertimeFormula(rowNumber), overtimeValue);
+    ws[totalHoursCell] = makeFormulaCell(buildTotalHoursFormula(rowNumber), totalHoursValue, TIME_DISPLAY_FORMAT);
+    ws[tardinessCell] = makeFormulaCell(buildTardinessFormula(rowNumber), tardinessValue, TIME_DISPLAY_FORMAT);
+    ws[leaveEarlierCell] = makeFormulaCell(buildLeaveEarlierFormula(rowNumber), leaveEarlierValue, TIME_DISPLAY_FORMAT);
+    ws[overtimeCell] = makeFormulaCell(buildOvertimeFormula(rowNumber), overtimeValue, TIME_DISPLAY_FORMAT);
 
     const dateCell = `A${rowNumber}`;
     const dayCell = `B${rowNumber}`;
-    ws[dateCell] = { t: 'n', v: dateToExcelSerial(record.date) };
+    ws[dateCell] = { t: 'n', v: dateToExcelSerial(record.date), z: DATE_DISPLAY_FORMAT };
     ws[dayCell] = { f: `TEXT(A${rowNumber},"ddd")`, v: getDayName(record.date), t: 's' };
   });
 
