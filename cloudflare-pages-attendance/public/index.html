@@ -1,0 +1,51 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Attendance Compiler</title>
+    <link rel="stylesheet" href="/styles.css" />
+  </head>
+  <body>
+    <main class="page-shell">
+      <section class="card hero">
+        <p class="eyebrow">Attendance Automation</p>
+        <h1>Compile fingerprint and online attendance into one Excel report</h1>
+        <p class="lede">
+          Upload both monthly exports, review any matching warnings, and download a tidy workbook with one sheet per employee.
+        </p>
+        <p class="privacy-note">
+          Privacy note: your Excel files are processed locally in your browser by this app. They are not uploaded by the attendance compiler before the compiled report is generated.
+        </p>
+      </section>
+
+      <section class="card">
+        <form id="upload-form" class="form-grid">
+          <label class="field">
+            <span>Fingerprint Excel</span>
+            <input id="fingerprint" name="fingerprint" type="file" accept=".xlsx" required />
+          </label>
+          <label class="field">
+            <span>Online Excel</span>
+            <input id="online" name="online" type="file" accept=".xlsx" required />
+          </label>
+          <div class="actions">
+            <button type="submit" id="generate-btn">Generate report</button>
+            <button type="button" id="reset-btn" class="secondary">Reset</button>
+          </div>
+        </form>
+      </section>
+
+      <section class="card status-card">
+        <div id="status" class="status">Waiting for files.</div>
+        <div id="summary" class="summary"></div>
+        <div id="download" class="download"></div>
+        <div id="warnings" class="warnings"></div>
+      </section>
+    </main>
+
+    <script src="https://cdn.jsdelivr.net/npm/exceljs@4.4.0/dist/exceljs.min.js"></script>
+    <script src="/browserCompiler.js"></script>
+    <script src="/app.js"></script>
+  </body>
+  </html>
