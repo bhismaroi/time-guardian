@@ -69,7 +69,7 @@ const Index = () => {
               </>
             ) : (
               <>
-                <ClipboardCheck className="w-4 h-4 mr-2" />
+                <Clock3 className="w-4 h-4 mr-2" />
                 Compile
               </>
             )}
