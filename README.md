@@ -1,73 +1,56 @@
-# Welcome to your Lovable project
+# Time Guardian
 
-## Project info
+Time Guardian is an attendance compiler for combining Fingerprint and Online Excel exports into one HR-ready attendance workbook.
 
-**URL**: https://lovable.dev/projects/REPLACE_WITH_PROJECT_ID
+It was built for the October 2025 attendance flow, but the parsing and calculation logic are reusable for similar monthly reports.
 
-## How can I edit this code?
+## What it does
 
-There are several ways of editing your application.
+- Upload a Fingerprint Excel file and an Online Excel file
+- Match employees by name, including first-name and last-name overlap
+- Merge the earliest clock-in and latest clock-out from both sources
+- Apply break, flexi, tardiness, and overtime rules
+- Generate a compiled Excel file with one worksheet per employee
 
-**Use Lovable**
+## Attendance rules
 
-Simply visit the [Lovable Project](https://lovable.dev/projects/REPLACE_WITH_PROJECT_ID) and start prompting.
+- Break deduction
+  - Monday to Thursday: 12:00 - 12:30
+  - Friday: 11:30 - 13:00
+- Flexi time
+  - Flexi 1: 08:00 - 08:15
+  - Flexi 2: 08:15 - 08:30
+  - After 08:30: tardiness
+- Overtime
+  - Monday to Thursday: starts at 17:30
+  - Friday: starts at 18:00
 
-Changes made via Lovable will be committed automatically to this repo.
+## Tech stack
 
-**Use your preferred IDE**
+- Vite
+- React
+- TypeScript
+- shadcn/ui
+- Tailwind CSS
+- SheetJS (`xlsx`)
 
-If you want to work locally using your own IDE, you can clone this repo and push changes. Pushed changes will also be reflected in Lovable.
-
-The only requirement is having Node.js & npm installed - [install with nvm](https://github.com/nvm-sh/nvm#installing-and-updating)
-
-Follow these steps:
+## Local setup
 
 ```sh
-# Step 1: Clone the repository using the project's Git URL.
-git clone <YOUR_GIT_URL>
-
-# Step 2: Navigate to the project directory.
-cd <YOUR_PROJECT_NAME>
-
-# Step 3: Install the necessary dependencies.
-npm i
-
-# Step 4: Start the development server with auto-reloading and an instant preview.
+npm install
 npm run dev
 ```
 
-**Edit a file directly in GitHub**
+## Scripts
 
-- Navigate to the desired file(s).
-- Click the "Edit" button (pencil icon) at the top right of the file view.
-- Make your changes and commit the changes.
+- `npm run dev` - start the app locally
+- `npm run build` - build for production
+- `npm run lint` - run ESLint
+- `npm run test` - run the test suite
 
-**Use GitHub Codespaces**
+## Notes
 
-- Navigate to the main page of your repository.
-- Click on the "Code" button (green button) near the top right.
-- Select the "Codespaces" tab.
-- Click on "New codespace" to launch a new Codespace environment.
-- Edit files directly within the Codespace and commit and push your changes once you're done.
+- The workbook output is designed to match the manual compiled attendance format as closely as possible.
+- The report period is inferred from the uploaded files.
+- If the two source files contain different months, the current flow is not guaranteed to merge them correctly.
 
-## What technologies are used for this project?
-
-This project is built with:
-
-- Vite
-- TypeScript
-- React
-- shadcn-ui
-- Tailwind CSS
-
-## How can I deploy this project?
-
-Simply open [Lovable](https://lovable.dev/projects/REPLACE_WITH_PROJECT_ID) and click on Share -> Publish.
-
-## Can I connect a custom domain to my Lovable project?
-
-Yes, you can!
-
-To connect a domain, navigate to Project > Settings > Domains and click Connect Domain.
-
-Read more here: [Setting up a custom domain](https://docs.lovable.dev/features/custom-domain#custom-domain)
