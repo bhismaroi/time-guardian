@@ -3,7 +3,7 @@ import { EmployeeTabs } from '@/components/EmployeeTabs';
 import { useAttendanceCompiler } from '@/hooks/useAttendanceCompiler';
 import { Button } from '@/components/ui/button';
 import { Alert, AlertDescription } from '@/components/ui/alert';
-import { ClipboardCheck, Download, RotateCcw, Loader2, AlertCircle } from 'lucide-react';
+import { Clock3, Download, RotateCcw, Loader2, AlertCircle } from 'lucide-react';
 
 const Index = () => {
   const {
@@ -27,10 +27,10 @@ const Index = () => {
         <div className="container mx-auto px-4 py-4">
           <div className="flex items-center gap-3">
             <div className="w-10 h-10 rounded-lg bg-primary flex items-center justify-center">
-              <ClipboardCheck className="w-5 h-5 text-primary-foreground" />
+              <Clock3 className="w-5 h-5 text-primary-foreground" />
             </div>
             <div>
-              <h1 className="text-xl font-bold text-foreground">Attendance Calculator</h1>
+              <h1 className="text-xl font-bold text-foreground">Time Guardian</h1>
               <p className="text-sm text-muted-foreground">Compile attendance from fingerprint and online sources</p>
             </div>
           </div>
@@ -98,7 +98,7 @@ const Index = () => {
         {!hasData && !isCompiling && (
           <div className="text-center py-16">
             <div className="w-16 h-16 rounded-full bg-muted mx-auto flex items-center justify-center mb-4">
-              <ClipboardCheck className="w-8 h-8 text-muted-foreground" />
+              <Clock3 className="w-8 h-8 text-muted-foreground" />
             </div>
             <h3 className="text-lg font-medium text-foreground mb-2">No Data Yet</h3>
             <p className="text-muted-foreground max-w-md mx-auto">
