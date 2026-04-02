@@ -211,10 +211,6 @@ export function compileAttendance(
       empNo: employee.empNo,
       name: employeeName,
       sheetName,
-      nip: `000${employee.empNo || '0'}`.slice(-6),
-      division: 'MITSUI OSK LINES',
-      department: 'IDACT',
-      section: 'IDACT',
       records,
     });
   }

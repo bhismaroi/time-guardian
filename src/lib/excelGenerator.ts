@@ -43,7 +43,10 @@ function buildTardinessFormula(row: number): string {
 }
 
 function buildLeaveEarlierFormula(row: number): string {
-  return `=IF(OR(G${row}="",H${row}=""),"",IF(G${row}<TIME(8,15,0),IF(WEEKDAY(A${row},2)=5,MAX(0,TIME(17,15,0)-H${row}),MAX(0,TIME(16,45,0)-H${row})),IF(G${row}<TIME(8,30,0),IF(WEEKDAY(A${row},2)=5,MAX(0,TIME(17,30,0)-H${row}),MAX(0,TIME(17,0,0)-H${row})),0)))`;
+  const weekday = `WEEKDAY(A${row},2)`;
+  const fridayClockOut = `IF(${weekday}=5,TIME(17,15,0),TIME(16,45,0))`;
+  const flexi2ClockOut = `IF(${weekday}=5,TIME(17,30,0),TIME(17,0,0))`;
+  return `=IF(OR(G${row}="",H${row}=""),"",IF(G${row}<TIME(8,15,0),MAX(0,${fridayClockOut}-H${row}),IF(G${row}<TIME(8,30,0),MAX(0,${flexi2ClockOut}-H${row}),0)))`;
 }
 
 function buildOvertimeFormula(row: number): string {

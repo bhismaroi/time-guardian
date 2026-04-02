@@ -122,10 +122,14 @@ describe('attendance compilation', () => {
 
     expect(workbook.SheetNames).toContain('Template');
     expect(workbook.SheetNames).toContain('Adi');
+    expect(sheet?.['A6']?.v).toBeTypeOf('number');
     expect(sheet?.['A6']?.z).toBe('dd/mm');
     expect(sheet?.['I6']?.f).toContain('H6-G6');
     expect(sheet?.['I6']?.z).toBe('[h]:mm');
-    expect(sheet?.['L6']?.f).toContain('TIME(17,30,0)');
-    expect(sheet?.['L6']?.z).toBe('[h]:mm');
+    expect(sheet?.['K6']?.f).toContain('TIME(8,15,0)');
+    expect(sheet?.['K6']?.f).toContain('TIME(8,30,0)');
+    expect(sheet?.['K6']?.z).toBe('[h]:mm');
+    expect(sheet?.['A6']?.v).not.toBe('Divisi : MITSUI OSK LINES');
+    expect(sheet?.['A6']?.v).not.toBe('NIP : 000427   Nama : ADI MISYKATUL ANWAR');
   });
 });

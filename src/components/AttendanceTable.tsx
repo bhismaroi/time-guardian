@@ -21,11 +21,6 @@ export function AttendanceTable({ employee }: AttendanceTableProps) {
         <div className="flex items-center justify-between">
           <div>
             <h3 className="font-semibold text-foreground">{employee.name}</h3>
-            <p className="text-sm text-muted-foreground">NIP: {employee.nip}</p>
-          </div>
-          <div className="text-right text-sm text-muted-foreground">
-            <p>{employee.division}</p>
-            <p>{employee.department}</p>
           </div>
         </div>
       </div>

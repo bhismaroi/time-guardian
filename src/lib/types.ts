@@ -15,7 +15,6 @@ export interface EmployeeAttendanceRecord {
 export interface EmployeeData {
   empNo: string;
   name: string;
-  nip: string;
   records: EmployeeAttendanceRecord[];
 }
 
@@ -59,10 +58,6 @@ export interface CompiledEmployee {
   empNo: string;
   name: string;
   sheetName: string;
-  nip: string;
-  division: string;
-  department: string;
-  section: string;
   records: MergedAttendanceRecord[];
 }
 
