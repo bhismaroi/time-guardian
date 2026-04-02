@@ -26,6 +26,13 @@ describe('attendance calculations', () => {
     expect(result.overtimeMinutes).toBe(15);
     expect(result.tardinessMinutes).toBe(0);
   });
+
+  it('does not mark leave earlier for clock-ins before 08:00', () => {
+    const date = new Date(2025, 9, 6);
+    const result = calculateAttendance(date, '07:46', '16:40');
+
+    expect(result.leaveEarlierMinutes).toBe(0);
+  });
 });
 
 describe('attendance compilation', () => {
@@ -128,6 +135,7 @@ describe('attendance compilation', () => {
     expect(sheet?.['I6']?.z).toBe('[h]:mm');
     expect(sheet?.['K6']?.f).toContain('TIME(8,15,0)');
     expect(sheet?.['K6']?.f).toContain('TIME(8,30,0)');
+    expect(sheet?.['K6']?.f).toContain('TIME(8,0,0)');
     expect(sheet?.['K6']?.z).toBe('[h]:mm');
     expect(sheet?.['A6']?.v).not.toBe('Divisi : MITSUI OSK LINES');
     expect(sheet?.['A6']?.v).not.toBe('NIP : 000427   Nama : ADI MISYKATUL ANWAR');

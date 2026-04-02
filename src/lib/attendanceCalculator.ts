@@ -139,13 +139,11 @@ export function calculateAttendance(
   result.workMinutes = Math.max(0, result.totalMinutes - result.breakMinutes);
 
   // Calculate leave earlier
-  const allowedClockOut = getAllowedClockOut(
-    result.flexiType === 'late' ? 'flexi2' : result.flexiType,
-    date
-  );
-  
-  if (clockOutMinutes < allowedClockOut) {
-    result.leaveEarlierMinutes = allowedClockOut - clockOutMinutes;
+  if (clockInMinutes >= FLEXI_1_START && clockInMinutes < FLEXI_2_END) {
+    const allowedClockOut = getAllowedClockOut(result.flexiType === 'late' ? 'flexi2' : result.flexiType, date);
+    if (clockOutMinutes < allowedClockOut) {
+      result.leaveEarlierMinutes = allowedClockOut - clockOutMinutes;
+    }
   }
 
   // Calculate overtime
