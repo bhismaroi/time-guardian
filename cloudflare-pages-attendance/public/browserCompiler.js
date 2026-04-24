@@ -498,19 +498,19 @@
   }
 
   function totalHoursFormula(rowNumber) {
-    return `IF(OR(G${rowNumber}="",H${rowNumber}=""),"",MAX(0,H${rowNumber}-G${rowNumber}-IF(B${rowNumber}="Fri",TIME(1,30,0),IF(OR(B${rowNumber}="Mon",B${rowNumber}="Tue",B${rowNumber}="Wed",B${rowNumber}="Thu"),TIME(0,30,0),0))))`;
+    return `IF(OR(G${rowNumber}="",H${rowNumber}="",B${rowNumber}="Sat",B${rowNumber}="Sun"),"",MAX(0,H${rowNumber}-G${rowNumber}-IF(B${rowNumber}="Fri",IF(AND(G${rowNumber}<TIME(13,0,0),H${rowNumber}>TIME(11,30,0)),MIN(H${rowNumber},TIME(13,0,0))-MAX(G${rowNumber},TIME(11,30,0)),0),IF(OR(B${rowNumber}="Mon",B${rowNumber}="Tue",B${rowNumber}="Wed",B${rowNumber}="Thu"),IF(AND(G${rowNumber}<TIME(12,30,0),H${rowNumber}>TIME(12,0,0)),MIN(H${rowNumber},TIME(12,30,0))-MAX(G${rowNumber},TIME(12,0,0)),0),0))))`;
   }
 
   function tardinessFormula(rowNumber) {
-    return `IF(G${rowNumber}="","",MAX(0,G${rowNumber}-TIME(8,30,0)))`;
+    return `IF(OR(G${rowNumber}="",B${rowNumber}="Sat",B${rowNumber}="Sun"),"",MAX(0,G${rowNumber}-TIME(8,30,0)))`;
   }
 
   function leaveEarlierFormula(rowNumber) {
-    return `IF(OR(G${rowNumber}="",H${rowNumber}=""),"",MAX(0,IF(G${rowNumber}<=TIME(8,0,0),IF(B${rowNumber}="Fri",TIME(17,0,0),TIME(16,30,0)),IF(G${rowNumber}<=TIME(8,15,0),IF(B${rowNumber}="Fri",TIME(17,15,0),TIME(16,45,0)),IF(B${rowNumber}="Fri",TIME(17,30,0),TIME(17,0,0))))-H${rowNumber}))`;
+    return `IF(OR(G${rowNumber}="",H${rowNumber}="",B${rowNumber}="Sat",B${rowNumber}="Sun"),"",MAX(0,IF(G${rowNumber}<=TIME(8,0,0),IF(B${rowNumber}="Fri",TIME(17,0,0),TIME(16,30,0)),IF(G${rowNumber}<=TIME(8,15,0),IF(B${rowNumber}="Fri",TIME(17,15,0),TIME(16,45,0)),IF(B${rowNumber}="Fri",TIME(17,30,0),TIME(17,0,0))))-H${rowNumber}))`;
   }
 
   function overtimeFormula(rowNumber) {
-    return `IF(H${rowNumber}="","",MAX(0,H${rowNumber}-IF(B${rowNumber}="Fri",TIME(18,0,0),IF(OR(B${rowNumber}="Mon",B${rowNumber}="Tue",B${rowNumber}="Wed",B${rowNumber}="Thu"),TIME(17,30,0),24))))`;
+    return `IF(OR(H${rowNumber}="",B${rowNumber}="Sat",B${rowNumber}="Sun"),"",MAX(0,H${rowNumber}-IF(B${rowNumber}="Fri",TIME(18,0,0),TIME(17,30,0))))`;
   }
 
   function remarksForDay(day, isWeekend) {
