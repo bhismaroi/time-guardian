@@ -61,7 +61,7 @@ export interface CompiledEmployee {
   records: MergedAttendanceRecord[];
 }
 
-export type FlexiType = 'flexi1' | 'flexi2' | 'late';
+export type FlexiType = 'standard' | 'flexi1' | 'flexi2' | 'late';
 
 export interface AttendanceCalculation {
   totalMinutes: number;

@@ -44,11 +44,11 @@ function buildTardinessFormula(row: number): string {
 
 function buildLeaveEarlierFormula(row: number): string {
   const weekday = `WEEKDAY(A${row},2)`;
-  const flexi1Window = `AND(G${row}>=TIME(8,0,0),G${row}<TIME(8,15,0))`;
-  const flexi2Window = `AND(G${row}>=TIME(8,15,0),G${row}<TIME(8,30,0))`;
-  const fridayFlexi1ClockOut = `IF(${weekday}=5,TIME(17,15,0),TIME(16,45,0))`;
-  const fridayFlexi2ClockOut = `IF(${weekday}=5,TIME(17,30,0),TIME(17,0,0))`;
-  return `=IF(OR(G${row}="",H${row}=""),"",IF(${flexi1Window},MAX(0,${fridayFlexi1ClockOut}-H${row}),IF(${flexi2Window},MAX(0,${fridayFlexi2ClockOut}-H${row}),0)))`;
+  const standardClockOut = `IF(${weekday}=5,TIME(17,0,0),TIME(16,30,0))`;
+  const flexi1ClockOut = `IF(${weekday}=5,TIME(17,15,0),TIME(16,45,0))`;
+  const flexi2ClockOut = `IF(${weekday}=5,TIME(17,30,0),TIME(17,0,0))`;
+  const expectedClockOut = `IF(G${row}<=TIME(8,0,0),${standardClockOut},IF(G${row}<=TIME(8,15,0),${flexi1ClockOut},${flexi2ClockOut}))`;
+  return `=IF(OR(G${row}="",H${row}=""),"",MAX(0,${expectedClockOut}-H${row}))`;
 }
 
 function buildOvertimeFormula(row: number): string {
