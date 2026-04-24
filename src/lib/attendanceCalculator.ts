@@ -4,7 +4,6 @@ import {
   parseTimeToMinutes,
   minutesToTimeString,
   isFriday,
-  isMondayOrThursday,
   isWeekend,
   calculateBreakOverlap,
 } from './timeUtils';
@@ -17,13 +16,16 @@ const BREAK_FRI_START = 11 * 60 + 30; // 11:30
 const BREAK_FRI_END = 13 * 60; // 13:00
 
 // Flexi time thresholds (in minutes from midnight)
-const FLEXI_1_START = 8 * 60; // 08:00
+const STANDARD_CLOCKIN_END = 8 * 60; // 08:00
+const FLEXI_1_START = 8 * 60 + 1; // 08:01
 const FLEXI_1_END = 8 * 60 + 15; // 08:15
-const FLEXI_2_START = 8 * 60 + 15; // 08:15
+const FLEXI_2_START = 8 * 60 + 16; // 08:16
 const FLEXI_2_END = 8 * 60 + 30; // 08:30
 const LATE_THRESHOLD = 8 * 60 + 30; // 08:30
 
 // Allowed clock-out times
+const STANDARD_CLOCKOUT_MON_THU = 16 * 60 + 30; // 16:30
+const STANDARD_CLOCKOUT_FRI = 17 * 60; // 17:00
 const FLEXI_1_CLOCKOUT_MON_THU = 16 * 60 + 45; // 16:45
 const FLEXI_1_CLOCKOUT_FRI = 17 * 60 + 15; // 17:15
 const FLEXI_2_CLOCKOUT_MON_THU = 17 * 60; // 17:00
@@ -37,10 +39,13 @@ const OVERTIME_START_FRI = 18 * 60; // 18:00
  * Determine the flexi type based on clock-in time
  */
 export function determineFlexiType(clockInMinutes: number): FlexiType {
-  if (clockInMinutes >= FLEXI_1_START && clockInMinutes < FLEXI_1_END) {
+  if (clockInMinutes <= STANDARD_CLOCKIN_END) {
+    return 'standard';
+  }
+  if (clockInMinutes >= FLEXI_1_START && clockInMinutes <= FLEXI_1_END) {
     return 'flexi1';
   }
-  if (clockInMinutes >= FLEXI_2_START && clockInMinutes < FLEXI_2_END) {
+  if (clockInMinutes >= FLEXI_2_START && clockInMinutes <= FLEXI_2_END) {
     return 'flexi2';
   }
   return 'late';
@@ -70,9 +75,13 @@ export function getBreakDuration(date: Date): { start: number; end: number; dura
  */
 export function getAllowedClockOut(flexiType: FlexiType, date: Date): number {
   if (isFriday(date)) {
-    return flexiType === 'flexi1' ? FLEXI_1_CLOCKOUT_FRI : FLEXI_2_CLOCKOUT_FRI;
+    if (flexiType === 'standard') return STANDARD_CLOCKOUT_FRI;
+    if (flexiType === 'flexi1') return FLEXI_1_CLOCKOUT_FRI;
+    return FLEXI_2_CLOCKOUT_FRI;
   }
-  return flexiType === 'flexi1' ? FLEXI_1_CLOCKOUT_MON_THU : FLEXI_2_CLOCKOUT_MON_THU;
+  if (flexiType === 'standard') return STANDARD_CLOCKOUT_MON_THU;
+  if (flexiType === 'flexi1') return FLEXI_1_CLOCKOUT_MON_THU;
+  return FLEXI_2_CLOCKOUT_MON_THU;
 }
 
 /**
@@ -117,7 +126,8 @@ export function calculateAttendance(
   result.totalMinutes = Math.max(0, clockOutMinutes - clockInMinutes);
 
   // Determine flexi type
-  result.flexiType = determineFlexiType(clockInMinutes);
+  const flexiType = determineFlexiType(clockInMinutes);
+  result.flexiType = flexiType;
 
   // Calculate tardiness (only if late)
   if (clockInMinutes > LATE_THRESHOLD) {
@@ -139,11 +149,9 @@ export function calculateAttendance(
   result.workMinutes = Math.max(0, result.totalMinutes - result.breakMinutes);
 
   // Calculate leave earlier
-  if (clockInMinutes >= FLEXI_1_START && clockInMinutes < FLEXI_2_END) {
-    const allowedClockOut = getAllowedClockOut(result.flexiType === 'late' ? 'flexi2' : result.flexiType, date);
-    if (clockOutMinutes < allowedClockOut) {
-      result.leaveEarlierMinutes = allowedClockOut - clockOutMinutes;
-    }
+  const allowedClockOut = getAllowedClockOut(flexiType, date);
+  if (clockOutMinutes < allowedClockOut) {
+    result.leaveEarlierMinutes = allowedClockOut - clockOutMinutes;
   }
 
   // Calculate overtime

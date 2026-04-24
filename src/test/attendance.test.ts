@@ -27,11 +27,35 @@ describe('attendance calculations', () => {
     expect(result.tardinessMinutes).toBe(0);
   });
 
-  it('does not mark leave earlier for clock-ins before 08:00', () => {
+  it('uses standard hours for clock-ins before 08:00', () => {
     const date = new Date(2025, 9, 6);
     const result = calculateAttendance(date, '07:46', '16:40');
 
     expect(result.leaveEarlierMinutes).toBe(0);
+  });
+
+  it('uses standard hours for an exact 08:00 clock-in', () => {
+    const date = new Date(2026, 2, 5);
+    const result = calculateAttendance(date, '08:00', '16:34');
+
+    expect(result.flexiType).toBe('standard');
+    expect(result.leaveEarlierMinutes).toBe(0);
+  });
+
+  it('flags leave earlier against flexi 1 expected clock-out', () => {
+    const date = new Date(2026, 2, 11);
+    const result = calculateAttendance(date, '08:07', '16:30');
+
+    expect(result.flexiType).toBe('flexi1');
+    expect(result.leaveEarlierMinutes).toBe(15);
+  });
+
+  it('flags leave earlier before standard clock-out for early clock-ins', () => {
+    const date = new Date(2026, 2, 5);
+    const result = calculateAttendance(date, '07:46', '16:20');
+
+    expect(result.flexiType).toBe('standard');
+    expect(result.leaveEarlierMinutes).toBe(10);
   });
 });
 
@@ -134,8 +158,9 @@ describe('attendance compilation', () => {
     expect(sheet?.['I6']?.f).toContain('H6-G6');
     expect(sheet?.['I6']?.z).toBe('[h]:mm');
     expect(sheet?.['K6']?.f).toContain('TIME(8,15,0)');
-    expect(sheet?.['K6']?.f).toContain('TIME(8,30,0)');
     expect(sheet?.['K6']?.f).toContain('TIME(8,0,0)');
+    expect(sheet?.['K6']?.f).toContain('TIME(16,30,0)');
+    expect(sheet?.['K6']?.f).toContain('TIME(17,30,0)');
     expect(sheet?.['K6']?.z).toBe('[h]:mm');
     expect(sheet?.['A6']?.v).not.toBe('Divisi : MITSUI OSK LINES');
     expect(sheet?.['A6']?.v).not.toBe('NIP : 000427   Nama : ADI MISYKATUL ANWAR');
