@@ -8,11 +8,21 @@ const summaryEl = document.getElementById('summary');
 const downloadEl = document.getElementById('download');
 const warningsEl = document.getElementById('warnings');
 
+let lastDownloadUrl = null;
+
 form.addEventListener('submit', async (event) => {
   event.preventDefault();
 
   if (!fingerprintInput.files[0] || !onlineInput.files[0]) {
     statusEl.textContent = 'Please choose both Excel files first.';
+    return;
+  }
+
+  const fingerprintFile = fingerprintInput.files[0];
+  const onlineFile = onlineInput.files[0];
+
+  if (!fingerprintFile.name.match(/\.(xlsx|xls)$/i) || !onlineFile.name.match(/\.(xlsx|xls)$/i)) {
+    statusEl.textContent = 'Please select valid Excel files (.xlsx or .xls).';
     return;
   }
 
@@ -22,14 +32,20 @@ form.addEventListener('submit', async (event) => {
 
   try {
     const payload = await window.AttendanceCompiler.buildCompiledWorkbookFromFiles(
-      fingerprintInput.files[0],
-      onlineInput.files[0],
+      fingerprintFile,
+      onlineFile,
+      { onProgress: (msg) => { statusEl.textContent = msg; } },
     );
+    statusEl.textContent = 'Generating Excel file...';
     const buffer = await payload.workbook.xlsx.writeBuffer();
     const blob = new Blob([buffer], {
       type: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
     });
-    const downloadUrl = URL.createObjectURL(blob);
+
+    if (lastDownloadUrl) {
+      URL.revokeObjectURL(lastDownloadUrl);
+    }
+    lastDownloadUrl = URL.createObjectURL(blob);
 
     statusEl.textContent = 'Report ready.';
     summaryEl.innerHTML = [
@@ -41,12 +57,13 @@ form.addEventListener('submit', async (event) => {
     ].join(' | ');
 
     const link = document.createElement('a');
-    link.href = downloadUrl;
+    link.href = lastDownloadUrl;
     link.download = payload.fileName;
     link.textContent = `Download ${payload.fileName}`;
     downloadEl.appendChild(link);
 
     if (payload.warnings.length) {
+      warningsEl.style.display = '';
       for (const warning of payload.warnings) {
         const item = document.createElement('div');
         item.className = 'warning-item';
@@ -54,10 +71,7 @@ form.addEventListener('submit', async (event) => {
         warningsEl.appendChild(item);
       }
     } else {
-      const item = document.createElement('div');
-      item.className = 'warning-item';
-      item.textContent = 'No matching warnings found in these files.';
-      warningsEl.appendChild(item);
+      warningsEl.style.display = 'none';
     }
   } catch (error) {
     statusEl.textContent = error.message;
@@ -81,4 +95,9 @@ function clearOutput() {
   summaryEl.innerHTML = '';
   downloadEl.innerHTML = '';
   warningsEl.innerHTML = '';
+  warningsEl.style.display = 'none';
+  if (lastDownloadUrl) {
+    URL.revokeObjectURL(lastDownloadUrl);
+    lastDownloadUrl = null;
+  }
 }

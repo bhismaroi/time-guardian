@@ -15,11 +15,12 @@
     'December',
   ];
 
-  async function buildCompiledWorkbookFromFiles(fingerprintFile, onlineFile) {
-    const [fingerprintRows, onlineRows] = await Promise.all([
-      parseFingerprintWorkbook(fingerprintFile),
-      parseOnlineWorkbook(onlineFile),
-    ]);
+  async function buildCompiledWorkbookFromFiles(fingerprintFile, onlineFile, { onProgress } = {}) {
+    if (onProgress) onProgress('Reading fingerprint file...');
+    const fingerprintRows = await parseFingerprintWorkbook(fingerprintFile);
+    if (onProgress) onProgress('Reading online file...');
+    const onlineRows = await parseOnlineWorkbook(onlineFile);
+    if (onProgress) onProgress('Merging attendance records...');
     const merged = mergeAttendance(fingerprintRows, onlineRows);
 
     if (!merged.month) {
@@ -34,7 +35,10 @@
     addTemplateSheet(workbook, merged.month);
 
     for (const employee of merged.employees) {
-      addEmployeeSheet(workbook, employee, merged.month);
+      const truncationWarning = addEmployeeSheet(workbook, employee, merged.month);
+      if (truncationWarning) {
+        merged.warnings.push(truncationWarning);
+      }
     }
 
     return {
@@ -53,8 +57,13 @@
   }
 
   async function parseFingerprintWorkbook(file) {
-    const workbook = new ExcelJS.Workbook();
-    await workbook.xlsx.load(await file.arrayBuffer());
+    let workbook;
+    try {
+      workbook = new ExcelJS.Workbook();
+      await workbook.xlsx.load(await file.arrayBuffer());
+    } catch (err) {
+      throw new Error(`Failed to read fingerprint Excel file: ${err.message || 'The file may be corrupted or not a valid Excel file.'}`);
+    }
     const worksheet = workbook.worksheets[0];
 
     if (!worksheet) {
@@ -91,8 +100,13 @@
   }
 
   async function parseOnlineWorkbook(file) {
-    const workbook = new ExcelJS.Workbook();
-    await workbook.xlsx.load(await file.arrayBuffer());
+    let workbook;
+    try {
+      workbook = new ExcelJS.Workbook();
+      await workbook.xlsx.load(await file.arrayBuffer());
+    } catch (err) {
+      throw new Error(`Failed to read online Excel file: ${err.message || 'The file may be corrupted or not a valid Excel file.'}`);
+    }
     const worksheet = workbook.worksheets[0];
 
     if (!worksheet) {
@@ -242,7 +256,7 @@
     month,
   }) {
     const days = [];
-    const dayCount = new Date(month.year, month.month, 0).getDate();
+    const dayCount = new Date(month.year, month.month - 1, 0).getDate();
 
     for (let day = 1; day <= dayCount; day += 1) {
       const date = new Date(Date.UTC(month.year, month.month - 1, day));
@@ -360,9 +374,10 @@
   }
 
   function addEmployeeSheet(workbook, employee, month) {
-    const sheetName = safeSheetName(employee.displayName || 'Employee', workbook);
+    const { name: sheetName, truncated } = safeSheetName(employee.displayName || 'Employee', workbook);
     const sheet = workbook.addWorksheet(sheetName);
     styleSheet(sheet, month, employee.displayName, employee);
+    return truncated ? `Sheet name for "${employee.displayName}" was truncated to "${sheetName}" due to Excel's 31-character limit.` : null;
   }
 
   function styleSheet(sheet, month, employeeName, employee) {
@@ -389,7 +404,7 @@
     sheet.mergeCells('A6:M6');
 
     sheet.getCell('A1').value = 'Laporan Absensi Harian';
-    sheet.getCell('A2').value = `Periode ${formatDateLabel(makeUtcDate(month.year, month.month, 1))} s/d ${formatDateLabel(makeUtcDate(month.year, month.month, new Date(month.year, month.month, 0).getDate()))}`;
+    sheet.getCell('A2').value = `Periode ${formatDateLabel(makeUtcDate(month.year, month.month, 1))} s/d ${formatDateLabel(makeUtcDate(month.year, month.month, new Date(month.year, month.month - 1, 0).getDate()))}`;
     sheet.getCell('A4').value = 'Date';
     sheet.getCell('B4').value = 'Day';
     sheet.getCell('C4').value = 'Kal';
@@ -598,7 +613,12 @@
       return null;
     }
 
-    return makeUtcDate(reportPeriod.year, month, Number(match[1]));
+    let year = reportPeriod.year;
+    if (month < reportPeriod.month) {
+      year += 1;
+    }
+
+    return makeUtcDate(year, month, Number(match[1]));
   }
 
   function parseOnlineReportPeriod(label) {
@@ -685,7 +705,9 @@
   }
 
   function safeSheetName(name, workbook) {
-    const sanitized = name.replace(/[\\/*?:[\]]/g, ' ').trim().slice(0, 31) || 'Employee';
+    const originalName = name.replace(/[\\/*?:[\]]/g, ' ').trim();
+    const sanitized = originalName.slice(0, 31) || 'Employee';
+    const truncated = originalName.length > 31;
     let candidate = sanitized;
     let counter = 2;
 
@@ -695,7 +717,7 @@
       counter += 1;
     }
 
-    return candidate;
+    return { name: candidate, truncated };
   }
 
   function thinBorder() {
