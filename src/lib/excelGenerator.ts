@@ -35,11 +35,11 @@ function buildBreakFormula(row: number): string {
 }
 
 function buildTotalHoursFormula(row: number): string {
-  return `=IF(OR(G${row}="",H${row}=""),"",MAX(0,(H${row}-G${row})-(${buildBreakFormula(row)})))`;
+  return `=IF(OR(G${row}="",H${row}="",WEEKDAY(A${row},2)>5),"",MAX(0,(H${row}-G${row})-(${buildBreakFormula(row)})))`;
 }
 
 function buildTardinessFormula(row: number): string {
-  return `=IF(G${row}="","",MAX(0,G${row}-TIME(8,30,0)))`;
+  return `=IF(OR(G${row}="",WEEKDAY(A${row},2)>5),"",MAX(0,G${row}-TIME(8,30,0)))`;
 }
 
 function buildLeaveEarlierFormula(row: number): string {
@@ -48,11 +48,11 @@ function buildLeaveEarlierFormula(row: number): string {
   const flexi1ClockOut = `IF(${weekday}=5,TIME(17,15,0),TIME(16,45,0))`;
   const flexi2ClockOut = `IF(${weekday}=5,TIME(17,30,0),TIME(17,0,0))`;
   const expectedClockOut = `IF(G${row}<=TIME(8,0,0),${standardClockOut},IF(G${row}<=TIME(8,15,0),${flexi1ClockOut},${flexi2ClockOut}))`;
-  return `=IF(OR(G${row}="",H${row}=""),"",MAX(0,${expectedClockOut}-H${row}))`;
+  return `=IF(OR(G${row}="",H${row}="",${weekday}>5),"",MAX(0,${expectedClockOut}-H${row}))`;
 }
 
 function buildOvertimeFormula(row: number): string {
-  return `=IF(H${row}="","",MAX(0,H${row}-IF(WEEKDAY(A${row},2)=5,TIME(18,0,0),TIME(17,30,0))))`;
+  return `=IF(OR(H${row}="",WEEKDAY(A${row},2)>5),"",MAX(0,H${row}-IF(WEEKDAY(A${row},2)=5,TIME(18,0,0),TIME(17,30,0))))`;
 }
 
 function makeFormulaCell(formula: string, cachedValue: number | string | null, numberFormat?: string): XLSX.CellObject {

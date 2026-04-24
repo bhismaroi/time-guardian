@@ -66,7 +66,7 @@ export function parseTimeToMinutes(time: string | null | undefined): number | nu
   const hours = Number(match[1]);
   const minutes = Number(match[2]);
 
-  if (!Number.isFinite(hours) || !Number.isFinite(minutes)) {
+  if (!Number.isFinite(hours) || !Number.isFinite(minutes) || hours > 23 || minutes > 59) {
     return null;
   }
 
@@ -137,11 +137,6 @@ export function getDayNameLong(date: Date): string {
 
 export function isFriday(date: Date): boolean {
   return date.getDay() === 5;
-}
-
-export function isMondayOrThursday(date: Date): boolean {
-  const day = date.getDay();
-  return day === 1 || day === 4;
 }
 
 export function isWeekend(date: Date): boolean {
@@ -240,6 +235,12 @@ export function extractTime(timeStr: string | null | undefined): string | null {
 
   const timeMatch = trimmed.match(/(\d{1,2}):(\d{2})(?::(\d{2}))?/);
   if (!timeMatch) return null;
+
+  const hours = Number(timeMatch[1]);
+  const minutes = Number(timeMatch[2]);
+  if (!Number.isFinite(hours) || !Number.isFinite(minutes) || hours > 23 || minutes > 59) {
+    return null;
+  }
 
   return `${timeMatch[1].padStart(2, '0')}:${timeMatch[2]}`;
 }

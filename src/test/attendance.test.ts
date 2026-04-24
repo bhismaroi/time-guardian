@@ -1,9 +1,11 @@
 import { describe, expect, it } from 'vitest';
+import { readFileSync } from 'node:fs';
 import * as XLSX from 'xlsx';
 import { calculateAttendance } from '@/lib/attendanceCalculator';
 import { compileAttendance } from '@/lib/attendanceCompiler';
 import { buildAttendanceWorkbook } from '@/lib/excelGenerator';
 import { parseOnlineExcel } from '@/lib/excelParser';
+import { extractTime, parseTimeToMinutes } from '@/lib/timeUtils';
 import type { RawFingerprintRecord } from '@/lib/types';
 
 describe('attendance calculations', () => {
@@ -56,6 +58,11 @@ describe('attendance calculations', () => {
 
     expect(result.flexiType).toBe('standard');
     expect(result.leaveEarlierMinutes).toBe(10);
+  });
+
+  it('ignores invalid clock times instead of calculating with impossible values', () => {
+    expect(parseTimeToMinutes('25:99')).toBeNull();
+    expect(extractTime('clocked 24:00')).toBeNull();
   });
 });
 
@@ -156,13 +163,27 @@ describe('attendance compilation', () => {
     expect(sheet?.['A6']?.v).toBeTypeOf('number');
     expect(sheet?.['A6']?.z).toBe('dd/mm');
     expect(sheet?.['I6']?.f).toContain('H6-G6');
+    expect(sheet?.['I6']?.f).toContain('WEEKDAY(A6,2)>5');
+    expect(sheet?.['I6']?.f).toContain('MIN(H6,TIME(12,30,0))-MAX(G6,TIME(12,0,0))');
     expect(sheet?.['I6']?.z).toBe('[h]:mm');
     expect(sheet?.['K6']?.f).toContain('TIME(8,15,0)');
     expect(sheet?.['K6']?.f).toContain('TIME(8,0,0)');
+    expect(sheet?.['K6']?.f).toContain('WEEKDAY(A6,2)>5');
     expect(sheet?.['K6']?.f).toContain('TIME(16,30,0)');
     expect(sheet?.['K6']?.f).toContain('TIME(17,30,0)');
     expect(sheet?.['K6']?.z).toBe('[h]:mm');
+    expect(sheet?.['I9']?.f).toContain('WEEKDAY(A9,2)>5');
+    expect(sheet?.['K9']?.f).toContain('WEEKDAY(A9,2)>5');
     expect(sheet?.['A6']?.v).not.toBe('Divisi : MITSUI OSK LINES');
     expect(sheet?.['A6']?.v).not.toBe('NIP : 000427   Nama : ADI MISYKATUL ANWAR');
+  });
+
+  it('keeps Cloudflare static workbook formulas aligned with source formulas', () => {
+    const compiler = readFileSync('cloudflare-pages-attendance/public/browserCompiler.js', 'utf8');
+
+    expect(compiler).toContain('B${rowNumber}="Sat"');
+    expect(compiler).toContain('B${rowNumber}="Sun"');
+    expect(compiler).toContain('MIN(H${rowNumber},TIME(12,30,0))-MAX(G${rowNumber},TIME(12,0,0))');
+    expect(compiler).toContain('IF(G${rowNumber}<=TIME(8,0,0)');
   });
 });
