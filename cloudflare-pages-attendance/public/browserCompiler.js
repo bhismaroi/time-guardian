@@ -521,7 +521,7 @@
   }
 
   function leaveEarlierFormula(rowNumber) {
-    return `IF(OR(G${rowNumber}="",H${rowNumber}=""),"",MAX(0,IF(B${rowNumber}="Fri",IF(G${rowNumber}<TIME(8,1,0),TIME(17,0,0),IF(G${rowNumber}<=TIME(8,15,0),TIME(17,15,0),IF(G${rowNumber}<=TIME(8,30,0),TIME(17,30,0),0))),IF(OR(B${rowNumber}="Mon",B${rowNumber}="Tue",B${rowNumber}="Wed",B${rowNumber}="Thu"),IF(G${rowNumber}<TIME(8,1,0),TIME(16,30,0),IF(G${rowNumber}<=TIME(8,15,0),TIME(16,45,0),IF(G${rowNumber}<=TIME(8,30,0),TIME(17,0,0),TIME(17,0,0)))),0)-H${rowNumber}))`;
+    return `IF(OR(G${rowNumber}="",H${rowNumber}=""),"",MAX(0,IF(B${rowNumber}="Fri",IF(G${rowNumber}<TIME(8,1,0),TIME(17,0,0),IF(G${rowNumber}<=TIME(8,15,0),TIME(17,15,0),IF(G${rowNumber}<=TIME(8,30,0),TIME(17,30,0),TIME(17,30,0))),IF(OR(B${rowNumber}="Mon",B${rowNumber}="Tue",B${rowNumber}="Wed",B${rowNumber}="Thu"),IF(G${rowNumber}<TIME(8,1,0),TIME(16,30,0),IF(G${rowNumber}<=TIME(8,15,0),TIME(16,45,0),IF(G${rowNumber}<=TIME(8,30,0),TIME(17,0,0),TIME(17,0,0)))),0)-H${rowNumber}))`;
   }
 
   function overtimeFormula(rowNumber) {
