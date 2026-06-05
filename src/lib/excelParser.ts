@@ -199,11 +199,16 @@ function addAliases(
   if (!normalized) return;
 
   const parts = extractNameParts(normalized);
+  // We deliberately do NOT register single-token aliases (first name or last
+  // name alone). Two distinct employees can share a first or last name, and
+  // adding single-token aliases was the root cause of `findOnlineMatch`
+  // attributing one employee's online data to multiple fingerprint employees.
+  // The full-name and reversed full-name aliases below cover the legitimate
+  // "Adi Wijaya" vs "Wijaya Adi" name-order flip.
   const aliases = new Set<string>([
     normalized,
     parts.join(' '),
     parts.slice().reverse().join(' '),
-    ...parts,
   ]);
 
   for (const alias of aliases) {

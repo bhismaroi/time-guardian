@@ -143,9 +143,14 @@ describe('attendance compilation', () => {
       },
     ];
 
+    // The online alias is the fingerprint name without the middle name. This
+    // is the realistic shape of office data: fingerprint exports carry the
+    // full name while online exports sometimes drop a middle name. The
+    // match scores 100 (first=first, last=last, shared tokens) and merges
+    // the earliest in (08:10 < 08:15) and latest out (18:14 > 17:00).
     const onlineData = new Map<string, Map<string, { clockIn: string | null; clockOut: string | null }>>();
     onlineData.set(
-      'misykatul anwar adi',
+      'adi anwar',
       new Map([
         ['2025-10-01', { clockIn: '08:10', clockOut: '18:14' }],
       ])
@@ -159,6 +164,62 @@ describe('attendance compilation', () => {
     expect(employee.sheetName).toBe('Adi');
     expect(firstDay?.actualIn).toBe('08:10');
     expect(firstDay?.actualOut).toBe('18:14');
+  });
+
+  it('does not let two fingerprint employees with a shared first name collide on the same online alias', () => {
+    // Regression: `addAliases` used to register single-token aliases (e.g.
+    // "adi"), so two distinct fingerprint employees ("Adi Wijaya" and
+    // "Adi Saputra") both inherited the online clock-ins of whichever
+    // online employee happened to register the "adi" alias first. The fix
+    // drops single-token aliases from the store. With no single-token
+    // alias available, a 2-token fingerprint name that shares only the
+    // first token with a 3-token online name scores 40 (first only) which
+    // is below the 60 minimum; the second employee ends up with no online
+    // match and empty clock-ins.
+    const fingerprintRecords: RawFingerprintRecord[] = [
+      {
+        empNo: '001',
+        name: 'Adi Wijaya',
+        date: '2025-10-01',
+        dateKey: '2025-10-01',
+        workingHours: 'Office Hour',
+        clockIn: '08:00',
+        clockOut: '17:00',
+        actualIn: '08:00',
+        actualOut: '17:00',
+      },
+      {
+        empNo: '002',
+        name: 'Adi Saputra',
+        date: '2025-10-01',
+        dateKey: '2025-10-01',
+        workingHours: 'Office Hour',
+        clockIn: '08:00',
+        clockOut: '17:00',
+        actualIn: '08:00',
+        actualOut: '17:00',
+      },
+    ];
+
+    const onlineData = new Map<string, Map<string, { clockIn: string | null; clockOut: string | null }>>();
+    onlineData.set(
+      'adi pratama',
+      new Map([
+        ['2025-10-01', { clockIn: '08:30', clockOut: '17:30' }],
+      ])
+    );
+
+    const compiled = compileAttendance(fingerprintRecords, onlineData);
+    const wijaya = compiled.find((e) => e.name === 'Adi Wijaya');
+    const saputra = compiled.find((e) => e.name === 'Adi Saputra');
+    const wijayaDay = wijaya?.records.find((r) => r.date.getDate() === 1);
+    const saputraDay = saputra?.records.find((r) => r.date.getDate() === 1);
+
+    // Neither employee should inherit the online clock-ins of a different
+    // online employee whose only overlap is the first name. The match
+    // score (40, first-name only) is below the 60 minimum.
+    expect(wijayaDay?.onlineIn).toBeNull();
+    expect(saputraDay?.onlineIn).toBeNull();
   });
 
   it('writes a workbook with formula cells for calculated columns', async () => {

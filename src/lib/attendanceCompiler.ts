@@ -15,6 +15,14 @@ function getEmployeeTokens(name: string): string[] {
   return extractNameParts(name).filter((token) => token.length > 1);
 }
 
+// Minimum score for a fuzzy name match. The score is the sum of first-name
+// and last-name matches (each 0 or 40). To accept a fuzzy match, the
+// candidate must match on BOTH the first and the last name (score 80). A
+// single shared first or last name alone (40) is not enough: that is the
+// failure mode that previously attributed "Adi Saputra"'s online data to
+// "Adi Wijaya" (both share first name "adi" — 40 points).
+const MIN_FUZZY_MATCH_SCORE = 80;
+
 function scoreNameMatch(fingerprintName: string, onlineKey: string): number {
   const fingerprintTokens = getEmployeeTokens(fingerprintName);
   const onlineTokens = getEmployeeTokens(onlineKey);
@@ -33,36 +41,72 @@ function scoreNameMatch(fingerprintName: string, onlineKey: string): number {
   let score = 0;
   if (fingerprintFirst === onlineFirst) score += 40;
   if (fingerprintLast === onlineLast) score += 40;
-  if (fingerprintTokens.some((token) => onlineTokens.includes(token))) score += 20;
-  if (fingerprintTokens.some((token) => onlineTokens.some((candidate) => candidate.includes(token) || token.includes(candidate)))) {
-    score += 10;
-  }
+  // The token-shared clause (previously +20 for any shared token) and the
+  // substring clause (previously +10 for any substring containment) are
+  // removed. Both produced false positives: "Adi Saputra" matching "Adi
+  // Pratama" (only first token shared) and "Eric" matching "Erica"
+  // (substring). First+last name matching alone is sufficient for the
+  // legitimate same-person cases: "Adi Misykatul Anwar" vs "Adi Anwar"
+  // scores 80, and the reversed-name case is handled by the explicit
+  // reversed-alias check in findOnlineMatch.
 
   return score;
 }
 
 function findOnlineMatch(
   fingerprintName: string,
-  onlineData: Map<string, Map<string, OnlineDayRecord>>
+  onlineData: Map<string, Map<string, OnlineDayRecord>>,
+  usedKeys: Set<string>
 ): Map<string, OnlineDayRecord> | undefined {
   const normalizedFingerprint = normalizeName(fingerprintName);
   if (!normalizedFingerprint) return undefined;
 
-  if (onlineData.has(normalizedFingerprint)) {
+  // 1. Exact normalized full-name match.
+  if (onlineData.has(normalizedFingerprint) && !usedKeys.has(normalizedFingerprint)) {
+    usedKeys.add(normalizedFingerprint);
     return onlineData.get(normalizedFingerprint);
   }
 
-  let bestMatch: { key: string; score: number } | null = null;
+  // 2. Reversed full-name match ("Adi Wijaya" vs "Wijaya Adi"). The alias
+  //    seeder registers reversed full names too, so this is a hash lookup.
+  const tokens = getEmployeeTokens(fingerprintName);
+  const reversed = tokens.slice().reverse().join(' ');
+  if (reversed && reversed !== normalizedFingerprint && onlineData.has(reversed) && !usedKeys.has(reversed)) {
+    usedKeys.add(reversed);
+    return onlineData.get(reversed);
+  }
 
+  // 3. Fuzzy match with a minimum score threshold. We collect every
+  //    candidate at or above the threshold so that ties can be detected
+  //    and reported as an ambiguous match (returning undefined).
+  const candidates: { key: string; score: number }[] = [];
   for (const key of onlineData.keys()) {
+    if (usedKeys.has(key)) continue;
     const score = scoreNameMatch(fingerprintName, key);
-    if (score > 0 && (!bestMatch || score > bestMatch.score)) {
-      bestMatch = { key, score };
+    if (score >= MIN_FUZZY_MATCH_SCORE) {
+      candidates.push({ key, score });
     }
   }
 
-  if (!bestMatch) return undefined;
-  return onlineData.get(bestMatch.key);
+  if (candidates.length === 0) return undefined;
+
+  // Deterministic tie-break: highest score, then alphabetical key.
+  candidates.sort((a, b) => (b.score - a.score) || a.key.localeCompare(b.key));
+  const topScore = candidates[0].score;
+  const tied = candidates.filter((c) => c.score === topScore);
+  if (tied.length > 1) {
+    // Two or more distinct online employees look equally plausible.
+    // Surface the ambiguity rather than silently picking one. The proper
+    // warnings channel lands in Phase 2; for now this goes to console.
+    console.warn(
+      `[attendance] ambiguous online match for "${fingerprintName}": ${tied.length} candidates tied at score ${topScore} (${tied.map((t) => t.key).join(', ')}). Skipping.`
+    );
+    return undefined;
+  }
+
+  const winner = candidates[0];
+  usedKeys.add(winner.key);
+  return onlineData.get(winner.key);
 }
 
 function buildEmployeeName(employee: { name: string }): string {
@@ -133,6 +177,11 @@ export function compileAttendance(
   const employees = getUniqueEmployees(fingerprintRecords);
   const compiledEmployees: CompiledEmployee[] = [];
   const usedSheetNames = new Set<string>();
+  // Tracks online keys already bound to a fingerprint employee in this
+  // compile pass. Defence in depth on top of the no-single-token-alias
+  // rule: even if a fingerprint name scores equally well against two
+  // online employees, only the first match consumes the record map.
+  const usedOnlineKeys = new Set<string>();
   const { year, month } = getMonthFromDates(fingerprintRecords, onlineData);
   const dates = getMonthDates(year, month);
 
@@ -160,7 +209,7 @@ export function compileAttendance(
       }
     }
 
-    const employeeOnlineData = findOnlineMatch(buildEmployeeName(employee), onlineData);
+    const employeeOnlineData = findOnlineMatch(buildEmployeeName(employee), onlineData, usedOnlineKeys);
 
     const records: MergedAttendanceRecord[] = [];
     for (const date of dates) {
