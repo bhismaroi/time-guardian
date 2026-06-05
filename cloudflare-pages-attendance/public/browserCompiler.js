@@ -256,7 +256,12 @@
     month,
   }) {
     const days = [];
-    const dayCount = new Date(month.year, month.month - 1, 0).getDate();
+    // dayCount = last day of the target month. Passing the (1-based) month as
+    // the 0-based month parameter and day 0 rolls over to the last day of the
+    // intended month. The previous expression `month.month - 1` returned the
+    // *previous* month's day count, silently truncating non-January/non-August
+    // months (e.g. March 2026 -> 28, Feb leap -> 31 overshoot).
+    const dayCount = new Date(month.year, month.month, 0).getDate();
 
     for (let day = 1; day <= dayCount; day += 1) {
       const date = new Date(Date.UTC(month.year, month.month - 1, day));
@@ -404,7 +409,11 @@
     sheet.mergeCells('A6:M6');
 
     sheet.getCell('A1').value = 'Laporan Absensi Harian';
-    sheet.getCell('A2').value = `Periode ${formatDateLabel(makeUtcDate(month.year, month.month, 1))} s/d ${formatDateLabel(makeUtcDate(month.year, month.month, new Date(month.year, month.month - 1, 0).getDate()))}`;
+    // Period label: end-of-month date uses the same corrected day-of-month
+    // idiom (passing the 1-based month as 0-based, day 0 = last day of the
+    // intended month). See dayCount comment above for the bug history.
+    const lastDayOfMonth = new Date(month.year, month.month, 0).getDate();
+    sheet.getCell('A2').value = `Periode ${formatDateLabel(makeUtcDate(month.year, month.month, 1))} s/d ${formatDateLabel(makeUtcDate(month.year, month.month, lastDayOfMonth))}`;
     sheet.getCell('A4').value = 'Date';
     sheet.getCell('B4').value = 'Day';
     sheet.getCell('C4').value = 'Kal';
