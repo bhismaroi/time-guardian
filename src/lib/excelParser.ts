@@ -41,17 +41,41 @@ const MONTH_LOOKUP: Record<string, number> = {
   december: 11,
 };
 
-function parseReportContext(data: unknown[][]): { month: number; year: number } | null {
+/**
+ * The reporting period covered by the online workbook. For single-month
+ * workbooks, start and end are equal. For multi-month reports that cross a
+ * year boundary (e.g. "Dec 1, 2025 - Jan 31, 2026"), the two halves are used
+ * to resolve which calendar year a given month label belongs to. Months are
+ * 0-based (Jan = 0).
+ */
+type ReportContext = {
+  startMonth: number;
+  startYear: number;
+  endMonth: number;
+  endYear: number;
+};
+
+function parseReportContext(data: unknown[][]): ReportContext | null {
   for (let rowIndex = 0; rowIndex < Math.min(data.length, 6); rowIndex++) {
     const row = data[rowIndex];
     if (!row) continue;
 
     const text = row.map((cell) => String(cell ?? '')).join(' ');
-    const rangeMatch = text.match(/([A-Za-z]{3,9})\s+\d{1,2},\s*(\d{4})\s*-\s*[A-Za-z]{3,9}\s+\d{1,2},\s*(\d{4})/);
+    // Capture groups: 1=startMonth, 2=startYear, 3=endMonth, 4=endYear.
+    // The original regex had only three groups and read "endYear" where the
+    // end month should have been, so cross-year ranges silently fell through
+    // to the single-match path and lost the second year.
+    const rangeMatch = text.match(/([A-Za-z]{3,9})\s+\d{1,2},\s*(\d{4})\s*-\s*([A-Za-z]{3,9})\s+\d{1,2},\s*(\d{4})/);
     if (rangeMatch) {
-      const month = MONTH_LOOKUP[rangeMatch[1].toLowerCase()];
-      if (month !== undefined) {
-        return { month, year: Number(rangeMatch[2]) };
+      const startMonth = MONTH_LOOKUP[rangeMatch[1].toLowerCase()];
+      const endMonth = MONTH_LOOKUP[rangeMatch[3].toLowerCase()];
+      if (startMonth !== undefined && endMonth !== undefined) {
+        return {
+          startMonth,
+          startYear: Number(rangeMatch[2]),
+          endMonth,
+          endYear: Number(rangeMatch[4]),
+        };
       }
     }
 
@@ -59,7 +83,8 @@ function parseReportContext(data: unknown[][]): { month: number; year: number } 
     if (singleMatch) {
       const month = MONTH_LOOKUP[singleMatch[1].toLowerCase()];
       if (month !== undefined) {
-        return { month, year: Number(singleMatch[2]) };
+        const year = Number(singleMatch[2]);
+        return { startMonth: month, startYear: year, endMonth: month, endYear: year };
       }
     }
   }
@@ -67,7 +92,21 @@ function parseReportContext(data: unknown[][]): { month: number; year: number } 
   return null;
 }
 
-function parseDateFromLabel(label: string, year: number): string | null {
+/**
+ * Resolve the calendar year for a month label inside a reporting range.
+ * For a single-month range (start === end) this returns the only year. For
+ * a cross-year range like "Dec 2025 - Jan 2026", months >= startMonth map
+ * to startYear and the rest map to endYear. Without this, a "Dec 1, 2025 -
+ * Jan 31, 2026" report would tag January 1 as 2025-01-01, never matching
+ * the fingerprint calendar dates.
+ */
+function resolveReportYear(month: number, context: ReportContext | null): number {
+  if (!context) return new Date().getFullYear();
+  if (context.startMonth === context.endMonth) return context.startYear;
+  return month >= context.startMonth ? context.startYear : context.endYear;
+}
+
+function parseDateFromLabel(label: string, context: ReportContext | null): string | null {
   const match = label.match(/(\d{1,2})\s+([A-Za-z]{3,9})/);
   if (!match) return null;
 
@@ -75,6 +114,7 @@ function parseDateFromLabel(label: string, year: number): string | null {
   const month = MONTH_LOOKUP[match[2].toLowerCase()];
   if (month === undefined) return null;
 
+  const year = resolveReportYear(month, context);
   return formatDateIso(new Date(year, month, day));
 }
 
@@ -174,7 +214,7 @@ function addAliases(
 
 function parseOnlineMatrixFormat(
   data: unknown[][],
-  reportContext: { month: number; year: number } | null
+  reportContext: ReportContext | null
 ): Map<string, Map<string, { clockIn: string | null; clockOut: string | null }>> {
   const result = new Map<string, Map<string, { clockIn: string | null; clockOut: string | null }>>();
 
@@ -184,7 +224,6 @@ function parseOnlineMatrixFormat(
   const dateRow = data[dateRowIndex];
   if (!dateRow) return result;
 
-  const reportYear = reportContext?.year ?? new Date().getFullYear();
   const columnToDateKey = new Map<number, string>();
 
   for (let col = 2; col < dateRow.length; col++) {
@@ -196,7 +235,10 @@ function parseOnlineMatrixFormat(
     const month = MONTH_LOOKUP[match[2].toLowerCase()];
     if (month === undefined) continue;
 
-    columnToDateKey.set(col, formatDateIso(new Date(reportYear, month, day)));
+    // Resolve the year via the report context so cross-year ranges (e.g.
+    // "Dec 1, 2025 - Jan 31, 2026") tag each column with the correct year.
+    const year = resolveReportYear(month, reportContext);
+    columnToDateKey.set(col, formatDateIso(new Date(year, month, day)));
   }
 
   for (let rowIndex = employeeStartRow; rowIndex < data.length; rowIndex++) {
@@ -246,11 +288,9 @@ function parseOnlineMatrixFormat(
 
 function parseOnlineBlockFormat(
   data: unknown[][],
-  reportContext: { month: number; year: number } | null
+  reportContext: ReportContext | null
 ): Map<string, Map<string, { clockIn: string | null; clockOut: string | null }>> {
   const result = new Map<string, Map<string, { clockIn: string | null; clockOut: string | null }>>();
-  const reportYear = reportContext?.year ?? new Date().getFullYear();
-  const reportMonth = reportContext?.month ?? new Date().getMonth();
 
   for (let rowIndex = 0; rowIndex < data.length; rowIndex++) {
     const row = data[rowIndex];
@@ -295,7 +335,7 @@ function parseOnlineBlockFormat(
         continue;
       }
 
-      const dateKey = parseDateFromLabel(dateLabel, reportYear);
+      const dateKey = parseDateFromLabel(dateLabel, reportContext);
       if (!dateKey) continue;
       const clockIn = extractTime(String(current[3] ?? ''));
       const clockOut = extractTime(String(current[4] ?? ''));

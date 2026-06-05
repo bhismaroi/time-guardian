@@ -93,6 +93,41 @@ describe('attendance compilation', () => {
     });
   });
 
+  it('tags cross-year date labels with the correct calendar year (block format)', () => {
+    // Regression for the bug where parseDateFromLabel used a single
+    // reportYear for every date label, so a "Dec 1, 2025 - Jan 31, 2026"
+    // report tagged January dates as 2025-01-01 and never matched the
+    // fingerprint calendar. The fix introduces a ReportContext with both
+    // ends of the range and resolves year per month.
+    const rows: unknown[][] = [];
+    rows[1] = ['Report'];
+    rows[2] = ['Dec 1, 2025 - Jan 31, 2026'];
+    rows[6] = [null, 'Full name', 'Adi Misykatul'];
+    rows[11] = [null, 'Schedule', 'Template', 'Clock-in', 'Clock-out', 'Worked', 'Late', 'Overtime (non approved)', 'Early departure', 'Worked on day off'];
+    rows[12] = ['30 Dec, Tu', '08:00 - 16:30', null, '08:05', '17:00', 1, 0, 0, 0, 0];
+    rows[13] = ['02 Jan, Fr', '08:00 - 16:30', null, '08:10', '17:05', 1, 0, 0, 0, 0];
+
+    const workbook = XLSX.utils.book_new();
+    const worksheet = XLSX.utils.aoa_to_sheet(rows);
+    XLSX.utils.book_append_sheet(workbook, worksheet, 'Sheet1');
+    const buffer = XLSX.write(workbook, { bookType: 'xlsx', type: 'array' });
+
+    const parsed = parseOnlineExcel(buffer);
+
+    // The December row should land on 2025-12-30 (start year side of the range).
+    expect(parsed.get('adi misykatul')?.get('2025-12-30')).toEqual({
+      clockIn: '08:05',
+      clockOut: '17:00',
+    });
+    // The January row should land on 2026-01-02 (end year side). Pre-fix,
+    // this was keyed as '2025-01-02' and the fingerprint calendar would
+    // never find a match.
+    expect(parsed.get('adi misykatul')?.get('2026-01-02')).toEqual({
+      clockIn: '08:10',
+      clockOut: '17:05',
+    });
+  });
+
   it('matches names using first and last name overlap and merges earliest/latest times', () => {
     const fingerprintRecords: RawFingerprintRecord[] = [
       {
