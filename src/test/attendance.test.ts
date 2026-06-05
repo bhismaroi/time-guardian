@@ -93,6 +93,39 @@ describe('attendance compilation', () => {
     });
   });
 
+  it('falls back to matrix format when a matrix workbook has a stray "Full name" cell', () => {
+    // Regression: a single "Full name" cell in column B used to flip the
+    // auto-detect into block mode, which then returned zero records
+    // because the block parser also needs a "Schedule" header within 10
+    // rows. The fix tries block first and falls through to matrix when
+    // the block parse yields nothing.
+    //
+    // Matrix format: row 0 is the header (cols 0/1 = "Last name"/"First
+    // name"), row 1 is the date row (cells from col 2 onward hold date
+    // labels), subsequent rows are employees with time ranges directly
+    // under each date column. We embed a stray "Full name" cell at the
+    // end of row 2 to trip the old auto-detect.
+    const rows: unknown[][] = [];
+    rows[0] = ['Last name', 'First name'];
+    rows[1] = ['Dates', 'Dates', '02 Mar, Mo', '03 Mar, Tu'];
+    rows[2] = ['Smith', 'Adi', '08:00 - 16:30', '08:10 - 18:10', '', '', '', '', '', '', '', 'Full name'];
+    rows[3] = ['Doe', 'Budi', '08:00 - 16:30', '08:05 - 18:00', '', '', '', '', '', '', '', ''];
+
+    const workbook = XLSX.utils.book_new();
+    const worksheet = XLSX.utils.aoa_to_sheet(rows);
+    XLSX.utils.book_append_sheet(workbook, worksheet, 'Sheet1');
+    const buffer = XLSX.write(workbook, { bookType: 'xlsx', type: 'array' });
+
+    const parsed = parseOnlineExcel(buffer);
+
+    // The matrix parser should have produced records for both employees.
+    // Pre-fix, the stray "Full name" cell flipped the parser to block
+    // mode and the result was an empty map.
+    expect(parsed.size).toBeGreaterThan(0);
+    expect(parsed.get('adi smith')).toBeDefined();
+    expect(parsed.get('budi doe')).toBeDefined();
+  });
+
   it('tags cross-year date labels with the correct calendar year (block format)', () => {
     // Regression for the bug where parseDateFromLabel used a single
     // reportYear for every date label, so a "Dec 1, 2025 - Jan 31, 2026"

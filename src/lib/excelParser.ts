@@ -443,11 +443,21 @@ export function parseOnlineExcel(
   if (data.length === 0) return new Map();
 
   const reportContext = parseReportContext(data);
-  const isBlockFormat = data.some((row) => normalizeName(String(row?.[1] ?? '')) === 'full name');
 
-  return isBlockFormat
-    ? parseOnlineBlockFormat(data, reportContext)
-    : parseOnlineMatrixFormat(data, reportContext);
+  // Try the block parser first. The block format requires a "Full name" cell
+  // in column B *and* a "Schedule" header within 10 rows of it. A single
+  // stray "Full name" cell in an otherwise matrix-format workbook satisfies
+  // the first condition but never the second, so a block parse on such a
+  // file returns an empty map. Falling through to the matrix parser in that
+  // case recovers the data; the previous code returned zero records and no
+  // error if a matrix file had a stray "Full name" cell.
+  const blockResult = parseOnlineBlockFormat(data, reportContext);
+  let totalBlockRecords = 0;
+  for (const employeeRecords of blockResult.values()) {
+    totalBlockRecords += employeeRecords.size;
+  }
+  if (totalBlockRecords > 0) return blockResult;
+  return parseOnlineMatrixFormat(data, reportContext);
 }
 
 /**
