@@ -351,6 +351,35 @@ describe('attendance compilation', () => {
     expect(leaveEarlierCell?.v).toBeUndefined();
   });
 
+  it('throws when no date can be detected in either source file', () => {
+    // Regression: getMonthFromDates used to fall back to a stale
+    // { year: 2025, month: 9 } literal when no dates parsed, and the
+    // workbook was built for that month with every cell empty. The fix
+    // throws a descriptive error so the UI surfaces the problem
+    // instead of silently producing an empty report.
+    const fingerprintRecords: RawFingerprintRecord[] = [
+      {
+        empNo: '427',
+        name: 'Adi Misykatul Anwar',
+        // Both date and dateKey are non-parseable strings; the parser
+        // accepts any of the formats in timeUtils.parseDate but these
+        // don't match any of them.
+        date: 'not-a-date',
+        dateKey: 'still-not-a-date',
+        workingHours: 'Office Hour',
+        clockIn: '08:00',
+        clockOut: '17:00',
+        actualIn: '08:00',
+        actualOut: '17:00',
+      },
+    ];
+    const onlineData = new Map<string, Map<string, { clockIn: string | null; clockOut: string | null }>>();
+
+    expect(() => compileAttendance(fingerprintRecords, onlineData)).toThrowError(
+      /Could not detect reporting period from uploaded files/
+    );
+  });
+
   it('writes a workbook with formula cells for calculated columns', async () => {
     const compiled = compileAttendance(
       [

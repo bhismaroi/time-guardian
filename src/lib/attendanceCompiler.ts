@@ -130,7 +130,18 @@ function getMonthFromDates(records: RawFingerprintRecord[], onlineData: Map<stri
 
   const first = candidates[0];
   if (!first) {
-    return { year: 2025, month: 9 };
+    // No recognisable dates in either the fingerprint or the online
+    // input. Pre-fix, the function silently returned the stale literal
+    // { year: 2025, month: 9 } (October 2025 in 0-indexed terms), and
+    // the workbook was built for that month with every cell empty. The
+    // user had no signal that the source files were malformed or empty.
+    // Throwing surfaces the problem through useAttendanceCompiler's
+    // existing try/catch into the red Alert banner.
+    throw new Error(
+      'Could not detect reporting period from uploaded files. '
+      + 'Check that the fingerprint file contains a recognisable date column '
+      + 'and the online file has at least one employee row.'
+    );
   }
 
   return { year: first.getFullYear(), month: first.getMonth() };
