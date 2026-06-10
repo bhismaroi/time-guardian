@@ -149,7 +149,12 @@
   }
 
   function mergeAttendance(fingerprintRows, onlineRows) {
-    const month = detectMonth(fingerprintRows.concat(onlineRows));
+    const months = detectMonths(fingerprintRows.concat(onlineRows));
+    // For display-only consumers (filename, period label, summary), we use
+    // the first month as the "primary" month. If the data spans multiple
+    // months, the workbook still contains every month; only the file
+    // label and sheet header reflect a single month.
+    const month = months[0] || null;
     const fingerprintMap = groupRowsByEmployee(fingerprintRows);
     const onlineMap = groupRowsByEmployee(onlineRows);
     const warnings = [];
@@ -181,7 +186,7 @@
         onlineName,
         fingerprintData,
         onlineData,
-        month,
+        months,
       }));
     }
 
@@ -197,7 +202,7 @@
         onlineName: null,
         fingerprintData,
         onlineData: null,
-        month,
+        months,
       }));
     }
 
@@ -253,7 +258,7 @@
     onlineName,
     fingerprintData,
     onlineData,
-    month,
+    months,
   }) {
     const days = [];
     // dayCount = last day of the target month. Passing the (1-based) month as
@@ -261,37 +266,43 @@
     // intended month. The previous expression `month.month - 1` returned the
     // *previous* month's day count, silently truncating non-January/non-August
     // months (e.g. March 2026 -> 28, Feb leap -> 31 overshoot).
-    const dayCount = new Date(month.year, month.month, 0).getDate();
+    //
+    // The outer loop iterates every detected month so a fingerprint/online
+    // workbook split across Mar/Apr renders both months' data. Pre-fix this
+    // function took a single `month` and silently dropped the others.
+    for (const month of months) {
+      const dayCount = new Date(month.year, month.month, 0).getDate();
 
-    for (let day = 1; day <= dayCount; day += 1) {
-      const date = new Date(Date.UTC(month.year, month.month - 1, day));
-      const dateKey = formatDateKey(date);
-      const fingerprintDay = fingerprintData && fingerprintData.byDate.get(dateKey);
-      const onlineDay = onlineData && onlineData.byDate.get(dateKey);
-      const sourceInTimes = []
-        .concat((fingerprintDay && fingerprintDay.sourceInTimes) || [])
-        .concat((onlineDay && onlineDay.sourceInTimes) || [])
-        .sort((left, right) => left - right);
-      const fingerprintOut = [].concat((fingerprintDay && fingerprintDay.sourceOutTimes) || []).sort((left, right) => right - left);
-      const onlineOut = [].concat((onlineDay && onlineDay.sourceOutTimes) || []).sort((left, right) => right - left);
-      const sourceOutTimes = fingerprintOut.concat(onlineOut).sort((left, right) => right - left);
-      const mergedIn = sourceInTimes.length ? sourceInTimes[0] : null;
-      const mergedOut = chooseMergedOut(fingerprintOut, onlineOut);
+      for (let day = 1; day <= dayCount; day += 1) {
+        const date = new Date(Date.UTC(month.year, month.month - 1, day));
+        const dateKey = formatDateKey(date);
+        const fingerprintDay = fingerprintData && fingerprintData.byDate.get(dateKey);
+        const onlineDay = onlineData && onlineData.byDate.get(dateKey);
+        const sourceInTimes = []
+          .concat((fingerprintDay && fingerprintDay.sourceInTimes) || [])
+          .concat((onlineDay && onlineDay.sourceInTimes) || [])
+          .sort((left, right) => left - right);
+        const fingerprintOut = [].concat((fingerprintDay && fingerprintDay.sourceOutTimes) || []).sort((left, right) => right - left);
+        const onlineOut = [].concat((onlineDay && onlineDay.sourceOutTimes) || []).sort((left, right) => right - left);
+        const sourceOutTimes = fingerprintOut.concat(onlineOut).sort((left, right) => right - left);
+        const mergedIn = sourceInTimes.length ? sourceInTimes[0] : null;
+        const mergedOut = chooseMergedOut(fingerprintOut, onlineOut);
 
-      days.push({
-        date,
-        dateKey,
-        mergedIn,
-        mergedOut,
-        sourceInTimes,
-        sourceOutTimes,
-        sourceTrace: {
-          fingerprintInCount: fingerprintDay ? fingerprintDay.sourceInTimes.length : 0,
-          fingerprintOutCount: fingerprintDay ? fingerprintDay.sourceOutTimes.length : 0,
-          onlineInCount: onlineDay ? onlineDay.sourceInTimes.length : 0,
-          onlineOutCount: onlineDay ? onlineDay.sourceOutTimes.length : 0,
-        },
-      });
+        days.push({
+          date,
+          dateKey,
+          mergedIn,
+          mergedOut,
+          sourceInTimes,
+          sourceOutTimes,
+          sourceTrace: {
+            fingerprintInCount: fingerprintDay ? fingerprintDay.sourceInTimes.length : 0,
+            fingerprintOutCount: fingerprintDay ? fingerprintDay.sourceOutTimes.length : 0,
+            onlineInCount: onlineDay ? onlineDay.sourceInTimes.length : 0,
+            onlineOutCount: onlineDay ? onlineDay.sourceOutTimes.length : 0,
+          },
+        });
+      }
     }
 
     return {
@@ -552,7 +563,13 @@
     return remarks.join(' + ');
   }
 
-  function detectMonth(rows) {
+  // Returns the sorted set of months seen in the input rows. Each entry
+  // is a 1-based { year, month } pair. The original implementation picked
+  // the single most-frequent month and silently dropped rows for any
+  // other month, so a Mar/Apr split report would render only March with
+  // no indication that April data was lost. Returning the set lets the
+  // caller iterate every month.
+  function detectMonths(rows) {
     const counts = new Map();
 
     rows.forEach((row) => {
@@ -561,13 +578,12 @@
       counts.set(key, (counts.get(key) || 0) + 1);
     });
 
-    const best = Array.from(counts.entries()).sort((left, right) => right[1] - left[1])[0];
-    if (!best) {
-      return null;
-    }
-
-    const parts = best[0].split('-').map(Number);
-    return { year: parts[0], month: parts[1] };
+    return Array.from(counts.entries())
+      .map(([key]) => {
+        const parts = key.split('-').map(Number);
+        return { year: parts[0], month: parts[1] };
+      })
+      .sort((left, right) => (left.year - right.year) || (left.month - right.month));
   }
 
   function parseCellDate(cell) {
