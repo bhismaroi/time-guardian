@@ -149,6 +149,18 @@ function pickTimeCell(row: unknown[], headers: string[], candidates: string[]): 
   return null;
 }
 
+// Returns the index of the first header that includes any of the given
+// priority labels. Used by the fingerprint parser to pick the
+// policy-preferred column when several candidates may be present (e.g.
+// "actual in" is preferred over "clock in"). Returns -1 if none match.
+function pickPriorityIndex(headers: string[], priority: string[]): number {
+  for (const label of priority) {
+    const index = headers.findIndex((header) => header.includes(label));
+    if (index !== -1) return index;
+  }
+  return -1;
+}
+
 function mergeClock(existing: DailyClock | undefined, next: DailyClock): DailyClock {
   if (!existing) return next;
 
@@ -371,19 +383,25 @@ export function parseFingerprintExcel(file: ArrayBuffer): RawFingerprintRecord[]
   if (data.length === 0) return [];
 
   const headerRow = data[0].map((cell) => normalizeName(String(cell ?? '')));
+  // For columns with a single candidate label (emp no, name, date, working
+  // hours), the previous Math.max(idx, default) idiom was fine — either the
+  // header is found or we fall back to a default position.
+  //
+  // For clockIn/clockOut the previous code did
+  //   Math.max(actualInIdx, clockInIdx)
+  // which is a position-based choice, not a priority-based one. If the
+  // workbook has "Actual In" at column C and "Clock In" at column D, the
+  // parser read the "Clock In" column — the opposite of the policy intent.
+  // The priority is: 'actual in' (post-shift time) is preferred over
+  // 'clock in' (raw punch time). pickPriorityIndex returns the first match
+  // in priority order, or -1 if none are present.
   const columnIndex = {
     empNo: Math.max(headerRow.findIndex((header) => header.includes('emp no')), 0),
     name: Math.max(headerRow.findIndex((header) => header === 'name'), 3),
     date: Math.max(headerRow.findIndex((header) => header.includes('date')), 5),
     workingHours: Math.max(headerRow.findIndex((header) => header.includes('working hours')), 6),
-    clockIn: Math.max(
-      headerRow.findIndex((header) => header.includes('actual in')),
-      headerRow.findIndex((header) => header.includes('clock in'))
-    ),
-    clockOut: Math.max(
-      headerRow.findIndex((header) => header.includes('actual out')),
-      headerRow.findIndex((header) => header.includes('clock out'))
-    ),
+    clockIn: pickPriorityIndex(headerRow, ['actual in', 'clock in time', 'clock in']),
+    clockOut: pickPriorityIndex(headerRow, ['actual out', 'clock out time', 'clock out']),
   };
 
   const records: RawFingerprintRecord[] = [];

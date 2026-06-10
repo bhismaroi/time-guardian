@@ -4,7 +4,7 @@ import * as XLSX from 'xlsx';
 import { calculateAttendance } from '@/lib/attendanceCalculator';
 import { compileAttendance } from '@/lib/attendanceCompiler';
 import { buildAttendanceWorkbook } from '@/lib/excelGenerator';
-import { parseOnlineExcel } from '@/lib/excelParser';
+import { parseFingerprintExcel, parseOnlineExcel } from '@/lib/excelParser';
 import { extractTime, parseTimeToMinutes } from '@/lib/timeUtils';
 import type { RawFingerprintRecord } from '@/lib/types';
 
@@ -197,6 +197,40 @@ describe('attendance compilation', () => {
     expect(employee.sheetName).toBe('Adi');
     expect(firstDay?.actualIn).toBe('08:10');
     expect(firstDay?.actualOut).toBe('18:14');
+  });
+
+  it('reads the policy-priority clock-in column even when it has the lower column index', () => {
+    // Regression: parseFingerprintExcel used Math.max(actualInIdx,
+    // clockInIdx) to pick the column. The Math.max call is a
+    // position-based choice, not a priority-based one. With "Actual
+    // In" at col 4 and "Clock In" at col 5, Math.max(4, 5) = 5 read
+    // from the "Clock In" column — the opposite of policy intent.
+    // The fix uses pickPriorityIndex, which returns the first match
+    // in priority order ('actual in' before 'clock in') regardless
+    // of column position.
+    // The parser uses hardcoded default column positions when the header
+    // labels aren't found: Name -> col 3, Date -> col 5, Working Hours
+    // -> col 6. The fixture mirrors that layout, with "Actual In" placed
+    // BEFORE "Clock In" (lower column index) to trigger the Math.max bug.
+    const rows: unknown[][] = [];
+    rows[0] = ['Emp No', 'Code', 'Division', 'Name', 'Position', 'Date', 'Working Hours', 'Actual In', 'Clock In', 'Actual Out', 'Clock Out'];
+    rows[1] = ['427', 'E-427', 'IDACT', 'Adi Misykatul', 'Staff', '2026-03-05', 'Office Hour', '08:00', '08:30', '17:00', '17:30'];
+
+    const workbook = XLSX.utils.book_new();
+    const worksheet = XLSX.utils.aoa_to_sheet(rows);
+    XLSX.utils.book_append_sheet(workbook, worksheet, 'Sheet1');
+    const buffer = XLSX.write(workbook, { bookType: 'xlsx', type: 'array' });
+
+    const records = parseFingerprintExcel(buffer);
+
+    expect(records).toHaveLength(1);
+    // The policy says "Actual In" (08:00) wins over "Clock In" (08:30).
+    // Pre-fix, Math.max(4, 5) = 5 picked "Clock In" and the record
+    // carried 08:30.
+    expect(records[0].actualIn).toBe('08:00');
+    expect(records[0].clockIn).toBe('08:00');
+    expect(records[0].actualOut).toBe('17:00');
+    expect(records[0].clockOut).toBe('17:00');
   });
 
   it('does not let two fingerprint employees with a shared first name collide on the same online alias', () => {
