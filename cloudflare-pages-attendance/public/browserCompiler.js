@@ -532,20 +532,29 @@
     });
   }
 
+  // Formula builders delegate to the canonical AttendancePolicy module
+  // (loaded as policy.js before this script). The day-of-week checks
+  // come from cloudflareDayChecks because the day name lives in column
+  // B (not column A as a WEEKDAY number) in the Cloudflare layout.
+  // Pre-Phase 2 these were hand-written inline; the formulas produced
+  // here are semantically equivalent to the originals but use a
+  // slightly different string shape (explicit OR(...) for the weekend
+  // guard, parenthesised (H-G) for the total hours subtraction, and a
+  // leading '=' which ExcelJS accepts with or without).
   function totalHoursFormula(rowNumber) {
-    return `IF(OR(G${rowNumber}="",H${rowNumber}="",B${rowNumber}="Sat",B${rowNumber}="Sun"),"",MAX(0,H${rowNumber}-G${rowNumber}-IF(B${rowNumber}="Fri",IF(AND(G${rowNumber}<TIME(13,0,0),H${rowNumber}>TIME(11,30,0)),MIN(H${rowNumber},TIME(13,0,0))-MAX(G${rowNumber},TIME(11,30,0)),0),IF(OR(B${rowNumber}="Mon",B${rowNumber}="Tue",B${rowNumber}="Wed",B${rowNumber}="Thu"),IF(AND(G${rowNumber}<TIME(12,30,0),H${rowNumber}>TIME(12,0,0)),MIN(H${rowNumber},TIME(12,30,0))-MAX(G${rowNumber},TIME(12,0,0)),0),0))))`;
+    return AttendancePolicy.buildTotalHoursFormula(rowNumber, AttendancePolicy.cloudflareDayChecks(rowNumber));
   }
 
   function tardinessFormula(rowNumber) {
-    return `IF(OR(G${rowNumber}="",B${rowNumber}="Sat",B${rowNumber}="Sun"),"",MAX(0,G${rowNumber}-TIME(8,30,0)))`;
+    return AttendancePolicy.buildTardinessFormula(rowNumber, AttendancePolicy.cloudflareDayChecks(rowNumber));
   }
 
   function leaveEarlierFormula(rowNumber) {
-    return `IF(OR(G${rowNumber}="",H${rowNumber}="",B${rowNumber}="Sat",B${rowNumber}="Sun"),"",MAX(0,IF(G${rowNumber}<=TIME(8,0,0),IF(B${rowNumber}="Fri",TIME(17,0,0),TIME(16,30,0)),IF(G${rowNumber}<=TIME(8,15,0),IF(B${rowNumber}="Fri",TIME(17,15,0),TIME(16,45,0)),IF(B${rowNumber}="Fri",TIME(17,30,0),TIME(17,0,0))))-H${rowNumber}))`;
+    return AttendancePolicy.buildLeaveEarlierFormula(rowNumber, AttendancePolicy.cloudflareDayChecks(rowNumber));
   }
 
   function overtimeFormula(rowNumber) {
-    return `IF(OR(H${rowNumber}="",B${rowNumber}="Sat",B${rowNumber}="Sun"),"",MAX(0,H${rowNumber}-IF(B${rowNumber}="Fri",TIME(18,0,0),TIME(17,30,0))))`;
+    return AttendancePolicy.buildOvertimeFormula(rowNumber, AttendancePolicy.cloudflareDayChecks(rowNumber));
   }
 
   function remarksForDay(day, isWeekend) {

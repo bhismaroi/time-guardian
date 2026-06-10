@@ -434,10 +434,27 @@ describe('attendance compilation', () => {
 
   it('keeps Cloudflare static workbook formulas aligned with source formulas', () => {
     const compiler = readFileSync('cloudflare-pages-attendance/public/browserCompiler.js', 'utf8');
+    const policy = readFileSync('cloudflare-pages-attendance/public/policy.js', 'utf8');
 
-    expect(compiler).toContain('B${rowNumber}="Sat"');
-    expect(compiler).toContain('B${rowNumber}="Sun"');
-    expect(compiler).toContain('MIN(H${rowNumber},TIME(12,30,0))-MAX(G${rowNumber},TIME(12,0,0))');
-    expect(compiler).toContain('IF(G${rowNumber}<=TIME(8,0,0)');
+    // The Cloudflare file loads the policy as a sibling <script> and
+    // delegates every formula builder to it. The day-of-week strings
+    // now come from cloudflareDayChecks in shared/policy.js (and its
+    // sync'd copy at cloudflare-pages-attendance/public/policy.js), so
+    // the test asserts the policy.js content is in place and the
+    // browserCompiler.js wires the four cell-level formulas to the
+    // policy builders.
+    expect(policy).toContain('B${row}="Sat"');
+    expect(policy).toContain('B${row}="Sun"');
+    expect(policy).toContain('B${row}="Fri"');
+    expect(policy).toContain('MIN(H${row},TIME(12,30,0))-MAX(G${row},TIME(12,0,0))');
+    expect(policy).toContain('IF(G${row}<=TIME(8,0,0)');
+
+    // The browserCompiler.js script must reference the AttendancePolicy
+    // global for each of the four cell-level formula builders.
+    expect(compiler).toContain('AttendancePolicy.buildTotalHoursFormula');
+    expect(compiler).toContain('AttendancePolicy.buildTardinessFormula');
+    expect(compiler).toContain('AttendancePolicy.buildLeaveEarlierFormula');
+    expect(compiler).toContain('AttendancePolicy.buildOvertimeFormula');
+    expect(compiler).toContain('AttendancePolicy.cloudflareDayChecks');
   });
 });

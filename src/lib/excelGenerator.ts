@@ -10,7 +10,7 @@ import {
   buildTardinessFormula as policyBuildTardinessFormula,
   buildLeaveEarlierFormula as policyBuildLeaveEarlierFormula,
   buildOvertimeFormula as policyBuildOvertimeFormula,
-  reactDayExpr,
+  reactDayChecks,
 } from './policy';
 
 const COLUMN_WIDTHS = [
@@ -39,31 +39,31 @@ function toFormulaFraction(value: string | null | undefined): number | null {
 }
 
 // Formula builders. Thin wrappers over the canonical policy builders
-// (shared/policy.js) that pre-supply the React day-of-week expression
-// (WEEKDAY(A${row},2)=5). Pre-Phase 2 each formula was hand-written
-// inline here, with the same Mon-Thu / Friday IF(WEEKDAY(...)=5) and
-// IF(WEEKDAY(...)<=4) branching repeated. Centralising in policy.js
-// means the Cloudflare bundle can produce byte-identical formulas
-// from the same source.
+// (shared/policy.js) that pre-supply the React day-of-week checks
+// (WEEKDAY(A${row},2)=5 for Friday, etc.). Pre-Phase 2 each formula
+// was hand-written inline here, with the same Mon-Thu / Friday
+// IF(WEEKDAY(...)=5) and IF(WEEKDAY(...)<=4) branching repeated.
+// Centralising in policy.js means the Cloudflare bundle can produce
+// byte-identical formulas from the same source.
 
 function buildBreakFormula(row: number): string {
-  return policyBuildBreakFormula(row, reactDayExpr(row));
+  return policyBuildBreakFormula(row, reactDayChecks(row));
 }
 
 function buildTotalHoursFormula(row: number): string {
-  return policyBuildTotalHoursFormula(row, reactDayExpr(row));
+  return policyBuildTotalHoursFormula(row, reactDayChecks(row));
 }
 
 function buildTardinessFormula(row: number): string {
-  return policyBuildTardinessFormula(row, reactDayExpr(row));
+  return policyBuildTardinessFormula(row, reactDayChecks(row));
 }
 
 function buildLeaveEarlierFormula(row: number): string {
-  return policyBuildLeaveEarlierFormula(row, reactDayExpr(row));
+  return policyBuildLeaveEarlierFormula(row, reactDayChecks(row));
 }
 
 function buildOvertimeFormula(row: number): string {
-  return policyBuildOvertimeFormula(row, reactDayExpr(row));
+  return policyBuildOvertimeFormula(row, reactDayChecks(row));
 }
 
 function makeFormulaCell(formula: string, cachedValue: number | string | null, numberFormat?: string): XLSX.CellObject {

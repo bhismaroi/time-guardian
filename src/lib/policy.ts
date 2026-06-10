@@ -36,9 +36,16 @@ import {
   buildTardinessFormula,
   buildLeaveEarlierFormula,
   buildOvertimeFormula,
-  reactDayExpr,
+  reactDayChecks,
+  cloudflareDayChecks,
   POLICY_DESCRIPTIONS,
 } from '../../shared/policy.js';
+
+export type DayChecks = {
+  friday: string;
+  weekday: string;
+  weekend: string;
+};
 
 export type FlexiType = 'standard' | 'flexi1' | 'flexi2' | 'late';
 
@@ -77,6 +84,7 @@ export {
   buildTardinessFormula,
   buildLeaveEarlierFormula,
   buildOvertimeFormula,
-  reactDayExpr,
+  reactDayChecks,
+  cloudflareDayChecks,
   POLICY_DESCRIPTIONS,
 };
