@@ -1,5 +1,6 @@
 import type { CompiledEmployee } from '@/lib/types';
-import { formatDateShort, isWeekend } from '@/lib/timeUtils';
+import { formatDateShort } from '@/lib/timeUtils';
+import { isWeekend } from '@/lib/policy';
 import { cn } from '@/lib/utils';
 import {
   Table,

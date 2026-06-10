@@ -1,31 +1,6 @@
 // Time and name helpers for attendance processing
 
-const MONTH_LOOKUP: Record<string, number> = {
-  jan: 0,
-  january: 0,
-  feb: 1,
-  february: 1,
-  mar: 2,
-  march: 2,
-  apr: 3,
-  april: 3,
-  may: 4,
-  jun: 5,
-  june: 5,
-  jul: 6,
-  july: 6,
-  aug: 7,
-  august: 7,
-  sep: 8,
-  sept: 8,
-  september: 8,
-  oct: 9,
-  october: 9,
-  nov: 10,
-  november: 10,
-  dec: 11,
-  december: 11,
-};
+import { MONTH_LOOKUP } from './policy';
 
 export function normalizeWhitespace(value: string): string {
   return value.replace(/\s+/g, ' ').trim();
@@ -50,9 +25,12 @@ export function extractNameParts(value: string | null | undefined): string[] {
 }
 
 /**
- * Parse a time string (HH:MM or HH:MM:SS) to minutes from midnight.
+ * Parse a time string (HH:MM or HH:MM:SS) into its component parts.
+ * Returns { hours, minutes, seconds } or null if the string is empty,
+ * is a placeholder (e.g. '__', '-'), or has invalid values.
+ * Both parseTimeToMinutes and extractTime are thin wrappers over this.
  */
-export function parseTimeToMinutes(time: string | null | undefined): number | null {
+function parseTimeParts(time: string | null | undefined): { hours: number; minutes: number; seconds: number } | null {
   if (!time) return null;
 
   const cleanTime = time.trim();
@@ -65,12 +43,25 @@ export function parseTimeToMinutes(time: string | null | undefined): number | nu
 
   const hours = Number(match[1]);
   const minutes = Number(match[2]);
+  const seconds = match[3] ? Number(match[3]) : 0;
 
-  if (!Number.isFinite(hours) || !Number.isFinite(minutes) || hours > 23 || minutes > 59) {
+  if (!Number.isFinite(hours) || !Number.isFinite(minutes) || !Number.isFinite(seconds)) {
+    return null;
+  }
+  if (hours > 23 || minutes > 59 || seconds > 59) {
     return null;
   }
 
-  return hours * 60 + minutes;
+  return { hours, minutes, seconds };
+}
+
+/**
+ * Parse a time string (HH:MM or HH:MM:SS) to minutes from midnight.
+ */
+export function parseTimeToMinutes(time: string | null | undefined): number | null {
+  const parts = parseTimeParts(time);
+  if (parts === null) return null;
+  return parts.hours * 60 + parts.minutes;
 }
 
 /**
@@ -226,23 +217,16 @@ export function formatDateIso(date: Date): string {
 }
 
 /**
- * Extract time from a cell value that may contain extra text.
+ * Extract time from a cell value that may contain extra text. Returns
+ * the HH:MM portion (with zero-padded hour) or null if no valid time
+ * is found. Delegates to parseTimeParts so the regex and validation
+ * are defined in exactly one place.
  */
 export function extractTime(timeStr: string | null | undefined): string | null {
-  if (!timeStr) return null;
-  const trimmed = normalizeWhitespace(timeStr);
-  if (!trimmed || trimmed === '__' || trimmed.includes('__') || trimmed === '-') return null;
-
-  const timeMatch = trimmed.match(/(\d{1,2}):(\d{2})(?::(\d{2}))?/);
-  if (!timeMatch) return null;
-
-  const hours = Number(timeMatch[1]);
-  const minutes = Number(timeMatch[2]);
-  if (!Number.isFinite(hours) || !Number.isFinite(minutes) || hours > 23 || minutes > 59) {
-    return null;
-  }
-
-  return `${timeMatch[1].padStart(2, '0')}:${timeMatch[2]}`;
+  const normalized = timeStr ? normalizeWhitespace(timeStr) : '';
+  const parts = parseTimeParts(normalized);
+  if (parts === null) return null;
+  return `${String(parts.hours).padStart(2, '0')}:${String(parts.minutes).padStart(2, '0')}`;
 }
 
 /**

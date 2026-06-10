@@ -2,7 +2,16 @@
 
 import * as XLSX from 'xlsx';
 import type { CompiledEmployee, MergedAttendanceRecord } from './types';
-import { dateToExcelSerial, formatDateFull, getDayName, isFriday, isWeekend, parseTimeToMinutes } from './timeUtils';
+import { dateToExcelSerial, formatDateFull, getDayName, parseTimeToMinutes } from './timeUtils';
+import { isFriday, isWeekend } from './policy';
+import {
+  buildBreakFormula as policyBuildBreakFormula,
+  buildTotalHoursFormula as policyBuildTotalHoursFormula,
+  buildTardinessFormula as policyBuildTardinessFormula,
+  buildLeaveEarlierFormula as policyBuildLeaveEarlierFormula,
+  buildOvertimeFormula as policyBuildOvertimeFormula,
+  reactDayExpr,
+} from './policy';
 
 const COLUMN_WIDTHS = [
   { wch: 10 },
@@ -29,30 +38,32 @@ function toFormulaFraction(value: string | null | undefined): number | null {
   return minutes / (24 * 60);
 }
 
+// Formula builders. Thin wrappers over the canonical policy builders
+// (shared/policy.js) that pre-supply the React day-of-week expression
+// (WEEKDAY(A${row},2)=5). Pre-Phase 2 each formula was hand-written
+// inline here, with the same Mon-Thu / Friday IF(WEEKDAY(...)=5) and
+// IF(WEEKDAY(...)<=4) branching repeated. Centralising in policy.js
+// means the Cloudflare bundle can produce byte-identical formulas
+// from the same source.
+
 function buildBreakFormula(row: number): string {
-  const day = `WEEKDAY(A${row},2)`;
-  return `IF(${day}=5,IF(AND(G${row}<TIME(13,0,0),H${row}>TIME(11,30,0)),MIN(H${row},TIME(13,0,0))-MAX(G${row},TIME(11,30,0)),0),IF(${day}<=4,IF(AND(G${row}<TIME(12,30,0),H${row}>TIME(12,0,0)),MIN(H${row},TIME(12,30,0))-MAX(G${row},TIME(12,0,0)),0),0))`;
+  return policyBuildBreakFormula(row, reactDayExpr(row));
 }
 
 function buildTotalHoursFormula(row: number): string {
-  return `=IF(OR(G${row}="",H${row}="",WEEKDAY(A${row},2)>5),"",MAX(0,(H${row}-G${row})-(${buildBreakFormula(row)})))`;
+  return policyBuildTotalHoursFormula(row, reactDayExpr(row));
 }
 
 function buildTardinessFormula(row: number): string {
-  return `=IF(OR(G${row}="",WEEKDAY(A${row},2)>5),"",MAX(0,G${row}-TIME(8,30,0)))`;
+  return policyBuildTardinessFormula(row, reactDayExpr(row));
 }
 
 function buildLeaveEarlierFormula(row: number): string {
-  const weekday = `WEEKDAY(A${row},2)`;
-  const standardClockOut = `IF(${weekday}=5,TIME(17,0,0),TIME(16,30,0))`;
-  const flexi1ClockOut = `IF(${weekday}=5,TIME(17,15,0),TIME(16,45,0))`;
-  const flexi2ClockOut = `IF(${weekday}=5,TIME(17,30,0),TIME(17,0,0))`;
-  const expectedClockOut = `IF(G${row}<=TIME(8,0,0),${standardClockOut},IF(G${row}<=TIME(8,15,0),${flexi1ClockOut},${flexi2ClockOut}))`;
-  return `=IF(OR(G${row}="",H${row}="",${weekday}>5),"",MAX(0,${expectedClockOut}-H${row}))`;
+  return policyBuildLeaveEarlierFormula(row, reactDayExpr(row));
 }
 
 function buildOvertimeFormula(row: number): string {
-  return `=IF(OR(H${row}="",WEEKDAY(A${row},2)>5),"",MAX(0,H${row}-IF(WEEKDAY(A${row},2)=5,TIME(18,0,0),TIME(17,30,0))))`;
+  return policyBuildOvertimeFormula(row, reactDayExpr(row));
 }
 
 function makeFormulaCell(formula: string, cachedValue: number | string | null, numberFormat?: string): XLSX.CellObject {

@@ -1,7 +1,8 @@
 // Attendance data compilation logic
 
 import type { CompiledEmployee, MergedAttendanceRecord, RawFingerprintRecord } from './types';
-import { formatDateIso, getDayName, getEarlierTime, getLaterTime, isWeekend, normalizeName, parseDate, extractNameParts } from './timeUtils';
+import { formatDateIso, getDayName, getEarlierTime, getLaterTime, normalizeName, parseDate, extractNameParts } from './timeUtils';
+import { isWeekend } from './policy';
 import { calculateAttendance, formatCalculationResults } from './attendanceCalculator';
 import { getUniqueEmployees, getMonthDates } from './excelParser';
 

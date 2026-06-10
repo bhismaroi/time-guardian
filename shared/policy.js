@@ -151,10 +151,12 @@ export function buildOvertimeFormula(row, dayExpr) {
 }
 
 // Day-of-week expression used by the React app (WEEKDAY with mode 2:
-// 1=Mon..7=Sun). Equivalent expressions for the Cloudflare app use
-// the B-column day name; Cloudflare passes its own dayExpr.
+// 1=Mon..7=Sun). The expression evaluates to a numeric value 1-7; the
+// callers in this module compose comparisons (=5, >5, <=4) against it.
+// Equivalent expressions for the Cloudflare app use the B-column day
+// name; Cloudflare passes its own dayExpr.
 export function reactDayExpr(row) {
-  return `WEEKDAY(A${row},2)=5`;
+  return `WEEKDAY(A${row},2)`;
 }
 
 // User-facing descriptions for the help section in Index.tsx. Keeping

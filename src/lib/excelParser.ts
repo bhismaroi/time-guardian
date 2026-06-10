@@ -2,10 +2,13 @@
 
 import * as XLSX from 'xlsx';
 import type { RawFingerprintRecord } from './types';
+import { MONTH_LOOKUP } from './policy';
 import {
   extractNameParts,
   extractTime,
   formatDateIso,
+  getEarlierTime,
+  getLaterTime,
   normalizeName,
   normalizeWhitespace,
   parseDate,
@@ -13,33 +16,6 @@ import {
 } from './timeUtils';
 
 type DailyClock = { clockIn: string | null; clockOut: string | null };
-
-const MONTH_LOOKUP: Record<string, number> = {
-  jan: 0,
-  january: 0,
-  feb: 1,
-  february: 1,
-  mar: 2,
-  march: 2,
-  apr: 3,
-  april: 3,
-  may: 4,
-  jun: 5,
-  june: 5,
-  jul: 6,
-  july: 6,
-  aug: 7,
-  august: 7,
-  sep: 8,
-  sept: 8,
-  september: 8,
-  oct: 9,
-  october: 9,
-  nov: 10,
-  november: 10,
-  dec: 11,
-  december: 11,
-};
 
 /**
  * The reporting period covered by the online workbook. For single-month
@@ -168,26 +144,6 @@ function mergeClock(existing: DailyClock | undefined, next: DailyClock): DailyCl
   const mergedOut = getLaterTime(existing.clockOut, next.clockOut);
 
   return { clockIn: mergedIn, clockOut: mergedOut };
-}
-
-function getEarlierTime(time1: string | null, time2: string | null): string | null {
-  const min1 = parseTimeToMinutes(time1);
-  const min2 = parseTimeToMinutes(time2);
-
-  if (min1 === null && min2 === null) return null;
-  if (min1 === null) return time2;
-  if (min2 === null) return time1;
-  return min1 <= min2 ? time1 : time2;
-}
-
-function getLaterTime(time1: string | null, time2: string | null): string | null {
-  const min1 = parseTimeToMinutes(time1);
-  const min2 = parseTimeToMinutes(time2);
-
-  if (min1 === null && min2 === null) return null;
-  if (min1 === null) return time2;
-  if (min2 === null) return time1;
-  return min1 >= min2 ? time1 : time2;
 }
 
 function getHeaderRow(data: unknown[][], labels: string[]): number {
