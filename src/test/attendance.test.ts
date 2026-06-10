@@ -306,6 +306,51 @@ describe('attendance compilation', () => {
     expect(saputraDay?.onlineIn).toBeNull();
   });
 
+  it('omits the cached value on no-attendance formula cells so the formula result is shown', () => {
+    // Regression: when a row had no actualIn/actualOut (e.g. a weekend
+    // day, or a missed punch), the workbook used to ship a cached value
+    // of 0 in I/J/K/L because toFormulaFraction(null) was 0. The
+    // formula itself returns '' via IF(OR(G="",H="",...),""), but
+    // viewers render the cached 0 until the user forces F9 to
+    // recalculate. The fix is to emit `{ f, t: 'n', z }` with no `v`
+    // when the cached value is null, so viewers display the formula's
+    // own "" result.
+    const compiled = compileAttendance(
+      [
+        // Saturday 4 Oct 2025: weekend, no attendance.
+        {
+          empNo: '427',
+          name: 'Adi Misykatul Anwar',
+          date: '2025-10-04',
+          dateKey: '2025-10-04',
+          workingHours: 'Office Hour',
+          clockIn: null,
+          clockOut: null,
+          actualIn: null,
+          actualOut: null,
+        },
+      ],
+      new Map()
+    );
+
+    const workbook = buildAttendanceWorkbook(compiled);
+    const sheet = workbook.Sheets['Adi'];
+    // The first data row is at row 6 (row 1: title, row 2: period, row
+    // 3: blank, row 4: headers, row 5: subheaders, row 6: first day).
+    // The weekend row is the 4th record, so it's at row 6 + 3 = 9.
+    const totalHoursCell = sheet?.['I9'];
+    const leaveEarlierCell = sheet?.['K9'];
+
+    // The formula is still present, the cell type is numeric, and
+    // there is no cached numeric value pre-populated.
+    expect(totalHoursCell?.f).toContain('H9-G9');
+    expect(totalHoursCell?.t).toBe('n');
+    expect(totalHoursCell?.v).toBeUndefined();
+    expect(leaveEarlierCell?.f).toBeDefined();
+    expect(leaveEarlierCell?.t).toBe('n');
+    expect(leaveEarlierCell?.v).toBeUndefined();
+  });
+
   it('writes a workbook with formula cells for calculated columns', async () => {
     const compiled = compileAttendance(
       [

@@ -57,7 +57,16 @@ function buildOvertimeFormula(row: number): string {
 
 function makeFormulaCell(formula: string, cachedValue: number | string | null, numberFormat?: string): XLSX.CellObject {
   if (cachedValue === null || cachedValue === undefined || cachedValue === '') {
-    return numberFormat ? { f: formula, z: numberFormat } : { f: formula };
+    // No cached value: emit the formula with `t: 'n'` and the number format
+    // but no `v`. The formula's own evaluation yields '' for rows with no
+    // clock-in/out (the IF guard returns ""), and the absent `v` prevents
+    // SheetJS from pre-populating the cell with a misleading 0. Some
+    // viewers (and the round-trip via XLSX.write) interpret a missing `t`
+    // inconsistently; explicitly setting `t: 'n'` makes the cell type
+    // stable. Pre-fix, the cached value was 0 on no-attendance rows
+    // because toFormulaFraction(null) returned 0, and the workbook
+    // displayed 0:00 in the I/J/K/L columns until the user forced F9.
+    return numberFormat ? { f: formula, z: numberFormat, t: 'n' } : { f: formula, t: 'n' };
   }
 
   return typeof cachedValue === 'number'
