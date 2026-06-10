@@ -199,6 +199,23 @@ describe('attendance compilation', () => {
     expect(firstDay?.actualOut).toBe('18:14');
   });
 
+  it('throws when the fingerprint workbook has no clock-in or clock-out columns', () => {
+    // Regression: parseFingerprintExcel used to silently produce a
+    // workbook full of null clock times when the header row had no
+    // recognisable clock-in/out columns. The user saw a zero-everywhere
+    // report with no indication of the structural problem.
+    const rows: unknown[][] = [];
+    rows[0] = ['Emp No', 'Code', 'Division', 'Name', 'Position', 'Date', 'Working Hours'];
+    rows[1] = ['427', 'E-427', 'IDACT', 'Adi Misykatul', 'Staff', '2026-03-05', 'Office Hour'];
+
+    const workbook = XLSX.utils.book_new();
+    const worksheet = XLSX.utils.aoa_to_sheet(rows);
+    XLSX.utils.book_append_sheet(workbook, worksheet, 'Sheet1');
+    const buffer = XLSX.write(workbook, { bookType: 'xlsx', type: 'array' });
+
+    expect(() => parseFingerprintExcel(buffer)).toThrowError(/missing both "Actual In\/Out" and "Clock In\/Out" columns/);
+  });
+
   it('reads the policy-priority clock-in column even when it has the lower column index', () => {
     // Regression: parseFingerprintExcel used Math.max(actualInIdx,
     // clockInIdx) to pick the column. The Math.max call is a

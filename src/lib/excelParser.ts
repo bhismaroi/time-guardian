@@ -404,6 +404,17 @@ export function parseFingerprintExcel(file: ArrayBuffer): RawFingerprintRecord[]
     clockOut: pickPriorityIndex(headerRow, ['actual out', 'clock out time', 'clock out']),
   };
 
+  // Surface a clear error if the workbook has no recognisable clock-in/out
+  // columns. Pre-fix, both indices resolved to -1, every record carried
+  // null clock times, and the workbook was still produced — the user got a
+  // zero-everywhere report with no indication of the structural problem.
+  if (columnIndex.clockIn < 0 && columnIndex.clockOut < 0) {
+    throw new Error(
+      'Fingerprint file is missing both "Actual In/Out" and "Clock In/Out" columns. '
+      + `Detected headers: [${headerRow.join(', ')}]`
+    );
+  }
+
   const records: RawFingerprintRecord[] = [];
 
   for (let rowIndex = 1; rowIndex < data.length; rowIndex++) {
