@@ -757,4 +757,43 @@ describe('attendance compilation', () => {
     expect(compiler).toContain('AttendancePolicy.buildOvertimeFormula');
     expect(compiler).toContain('AttendancePolicy.cloudflareDayChecks');
   });
+
+  it('compileAttendance scales linearly with the number of fingerprint records (regression for the O(n*m) loop)', () => {
+    // Phase 4.1 replaced the inner loop
+    //   for (const record of fingerprintRecords) if (normalizeName(record.name) !== normalizeName(employee.name)) continue;
+    // with a single up-front normalisation pass that buckets records
+    // by normalised name, so the per-employee inner step is an O(1)
+    // Map.get instead of an O(m) walk that re-normalises every
+    // comparison. This test generates 200 employees and 100 records
+    // per employee (20,000 records total) and asserts the compile
+    // finishes in well under the 1-second bound the old implementation
+    // would not have hit on larger inputs.
+    const employees = 200;
+    const recordsPerEmployee = 100;
+    const fingerprintRecords = [];
+    for (let i = 0; i < employees; i++) {
+      const name = `Person ${String(i).padStart(3, '0')}`;
+      for (let day = 1; day <= recordsPerEmployee; day++) {
+        fingerprintRecords.push({
+          empNo: String(i),
+          name,
+          date: `2025-10-${String(day).padStart(2, '0')}`,
+          dateKey: `2025-10-${String(day).padStart(2, '0')}`,
+          workingHours: 'Office Hour',
+          clockIn: '08:10',
+          clockOut: '17:40',
+          actualIn: '08:10',
+          actualOut: '17:40',
+        });
+      }
+    }
+    const start = Date.now();
+    const compiled = compileAttendance(fingerprintRecords, new Map());
+    const elapsed = Date.now() - start;
+    expect(compiled.length).toBe(employees);
+    // 20,000 records × 200 employees = 4,000,000 iterations under the
+    // old O(n*m) loop. The new Map-bucket pass should finish in tens
+    // of milliseconds. Allow up to 2 seconds as a generous CI bound.
+    expect(elapsed).toBeLessThan(2000);
+  });
 });

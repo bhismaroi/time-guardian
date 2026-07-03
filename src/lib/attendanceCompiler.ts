@@ -197,12 +197,28 @@ export function compileAttendance(
   const { year, month } = getMonthFromDates(fingerprintRecords, onlineData);
   const dates = getMonthDates(year, month);
 
+  // Pre-group fingerprint records by normalized employee name. The
+  // previous inner loop walked all m records for each of n employees
+  // and called normalizeName() on every comparison (O(n*m) string
+  // allocations + lower-casing). A single O(m) pass to build this
+  // Map brings the per-employee inner step down to O(records_for_this_emp).
+  const fingerprintByName = new Map<string, RawFingerprintRecord[]>();
+  for (const record of fingerprintRecords) {
+    const key = normalizeName(record.name);
+    if (!key) continue;
+    const bucket = fingerprintByName.get(key);
+    if (bucket) {
+      bucket.push(record);
+    } else {
+      fingerprintByName.set(key, [record]);
+    }
+  }
+
   for (const employee of employees) {
     const fingerprintByDate = new Map<string, { in: string | null; out: string | null }>();
+    const employeeRecords = fingerprintByName.get(normalizeName(employee.name)) ?? [];
 
-    for (const record of fingerprintRecords) {
-      if (normalizeName(record.name) !== normalizeName(employee.name)) continue;
-
+    for (const record of employeeRecords) {
       const dateKey = getFingerprintDateKey(record);
       if (!dateKey) continue;
 
