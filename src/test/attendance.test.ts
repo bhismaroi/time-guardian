@@ -6,6 +6,7 @@ import { compileAttendance } from '@/lib/attendanceCompiler';
 import { buildAttendanceWorkbook } from '@/lib/excelGenerator';
 import { parseFingerprintExcel, parseOnlineExcel } from '@/lib/excelParser';
 import { extractTime, parseTimeToMinutes } from '@/lib/timeUtils';
+import { compileWithCloudflare } from './cloudflare-harness';
 import type { RawFingerprintRecord } from '@/lib/types';
 
 describe('attendance calculations', () => {
@@ -378,6 +379,120 @@ describe('attendance compilation', () => {
     expect(() => compileAttendance(fingerprintRecords, onlineData)).toThrowError(
       /Could not detect reporting period from uploaded files/
     );
+  });
+
+  it('Cloudflare harness loads the static bundle in jsdom and produces a populated workbook', async () => {
+    // Smoke test for the Cloudflare test harness. The Cloudflare
+    // parser has its own column expectations: fingerprint name is in
+    // col 4, date col 6, actual in/out cols 10/11; the online
+    // workbook uses a "Full name" marker in column B with day labels
+    // in column A and times in columns D/E. We build synthetic
+    // workbooks matching that shape and assert the captured stub
+    // workbook has the expected sheets, cells, and formula strings.
+    // SheetJS's aoa_to_sheet collapses leading null/empty rows, so
+    // every "row" in the AOA must contain at least one cell value.
+    // We use a single empty-string cell in A1 and A2 to act as a
+    // placeholder and preserve the data positions the Cloudflare
+    // parser expects.
+    const fingerprintRows: unknown[][] = [
+      [''],                                                                  // row 1: skipped by the Cloudflare parser
+      ['', '', '', 'Adi Misykatul', '', '2026-03-03', '', '', '', '08:00', '17:00'],
+      ['', '', '', 'Adi Misykatul', '', '2026-03-04', '', '', '', '08:05', '17:30'],
+    ];
+    const fingerprintWorkbook = XLSX.utils.book_new();
+    const fingerprintWorksheet = XLSX.utils.aoa_to_sheet(fingerprintRows);
+    XLSX.utils.book_append_sheet(fingerprintWorkbook, fingerprintWorksheet, 'Sheet1');
+    const fingerprintBuffer = XLSX.write(fingerprintWorkbook, { bookType: 'xlsx', type: 'array' });
+
+    // The Cloudflare online parser requires:
+    //   - Cell A3 (row 3 col 1) = the report period.
+    //   - A "Full name" marker in column B (col 2) of the employee
+    //     section.
+    //   - A "Schedule" label in column B of the next row.
+    //   - Day labels in column A matching /^(\d{2})\s+([A-Za-z]{3}),/.
+    //   - Times in columns D (col 4) and E (col 5).
+    const onlineRows: unknown[][] = [
+      [''],                                                                    // row 1
+      [''],                                                                    // row 2
+      ['Mar 1, 2026 - Mar 31, 2026'],                                          // row 3: report period
+      [''],                                                                    // row 4
+      [''],                                                                    // row 5
+      [null, 'Full name', 'Adi Misykatul'],                                    // row 6: name marker
+      [null, 'Schedule', 'Template', 'Clock-in', 'Clock-out'],                  // row 7: schedule header
+      ['03 Mar, Tu', '08:00 - 16:30', null, '08:10', '18:10'],                  // row 8: day
+      ['04 Mar, We', '08:00 - 16:30', null, '08:15', '18:15'],                  // row 9: day
+    ];
+    const onlineWorkbook = XLSX.utils.book_new();
+    const onlineWorksheet = XLSX.utils.aoa_to_sheet(onlineRows);
+    XLSX.utils.book_append_sheet(onlineWorkbook, onlineWorksheet, 'Sheet1');
+    const onlineBuffer = XLSX.write(onlineWorkbook, { bookType: 'xlsx', type: 'array' });
+
+    const result = await compileWithCloudflare(fingerprintBuffer, onlineBuffer);
+
+    // The Cloudflare bundle returns the workbook (with all sheets
+    // populated), a fileName, warnings, and a summary.
+    expect(result).toBeDefined();
+    expect(result.workbook).toBeDefined();
+    expect(result.fileName).toMatch(/^Compiled Attendance/);
+    expect(result.summary.employees).toBeGreaterThan(0);
+
+    // The captured sheets include the Template sheet and one per
+    // employee. The matched employee is "Adi Misykatul" so we expect
+    // a sheet named "Adi" (first-name) or "Adi Misykatul" (truncated).
+    const sheetNames = result.workbook.worksheets.map((s: { name: string }) => s.name);
+    expect(sheetNames).toContain('Template');
+    const employeeSheet = result.workbook.worksheets.find(
+      (s: { name: string }) => s.name !== 'Template'
+    );
+    expect(employeeSheet).toBeDefined();
+
+    // The per-employee sheet has the layout from styleSheet:
+    // A1 = title, A2 = period, A4..M4 = headers, A6 = "Nama : ..."
+    // The data rows start at row 7.
+    const titleCell = employeeSheet.getCell('A1');
+    expect(titleCell.value).toBe('Laporan Absensi Harian');
+    const periodCell = employeeSheet.getCell('A2');
+    expect(periodCell.value).toMatch(/^Periode 01\/03\/2026 s\/d 31\/03\/2026$/);
+    const nameCell = employeeSheet.getCell('A6');
+    expect(nameCell.value).toBe('Nama : Adi Misykatul');
+
+    // The Cloudflare compiler iterates over every day in the detected
+    // month and writes one row per day starting at row 7. Day 1 is
+    // 2026-03-01 (Sunday), day 2 is 2026-03-02 (Monday), day 3 is
+    // 2026-03-03 (Tuesday), and so on. The fingerprint and online
+    // data only contain records for March 3 and March 4 — so the
+    // attendance columns for rows 7-8 (March 1, March 2) should be
+    // null, and the values for row 9 (March 3) should be the merged
+    // 08:00 / 18:10 from the test data.
+    const firstDataRow = employeeSheet.getRow(7);
+    expect(firstDataRow.getCell(2).value).toBe('Sun'); // B7 = day name for March 1
+    // Rows 7 and 8 have no attendance. G7 and H7 should be null.
+    expect(firstDataRow.getCell(7).value).toBeNull();
+    expect(firstDataRow.getCell(8).value).toBeNull();
+
+    const march3Row = employeeSheet.getRow(9);
+    expect(march3Row.getCell(2).value).toBe('Tue'); // B9 = day name for March 3
+    // G9 is the earliest of fingerprint (08:00) and online (08:10)
+    // = 08:00 = 8/24.
+    expect(march3Row.getCell(7).value).toBeCloseTo(8 / 24, 6);
+    // H9 is the latest of fingerprint (17:00) and online (18:10)
+    // = 18:10 = (18*60+10)/(24*60).
+    expect(march3Row.getCell(8).value).toBeCloseTo((18 * 60 + 10) / (24 * 60), 6);
+
+    // The formula cells (I-L) are ExcelJS formula objects with the
+    // formula produced by the policy builders. The day-name check
+    // uses the cloudflareDayChecks (B="Sat", B="Sun", B="Fri")
+    // convention.
+    const totalHours = march3Row.getCell(9);
+    const tardiness = march3Row.getCell(10);
+    const leaveEarlier = march3Row.getCell(11);
+    const overtime = march3Row.getCell(12);
+    expect(typeof totalHours.value).toBe('object');
+    expect((totalHours.value as { formula: string }).formula).toContain('OR(B9="Sat",B9="Sun")');
+    expect((totalHours.value as { formula: string }).formula).toContain('MAX(0,(H9-G9)');
+    expect((tardiness.value as { formula: string }).formula).toContain('OR(B9="Sat",B9="Sun")');
+    expect((leaveEarlier.value as { formula: string }).formula).toContain('B9="Fri"');
+    expect((overtime.value as { formula: string }).formula).toContain('IF(B9="Fri",TIME(18,0,0),TIME(17,30,0))');
   });
 
   it('writes a workbook with formula cells for calculated columns', async () => {
