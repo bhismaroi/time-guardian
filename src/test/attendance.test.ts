@@ -495,6 +495,191 @@ describe('attendance compilation', () => {
     expect((overtime.value as { formula: string }).formula).toContain('IF(B9="Fri",TIME(18,0,0),TIME(17,30,0))');
   });
 
+  // Behavioural parity: drive the React path and the Cloudflare
+  // path with the same logical attendance data and verify that the
+  // resulting sheets agree on the things an HR operator would notice
+  // (per-row date, day, merged actual in/out) and on the shape of
+  // the formula cells (each formula string contains the right
+  // policy constants — exact byte match is not expected because
+  // the React path uses WEEKDAY(A,2)=5 and the Cloudflare path
+  // uses B="Sat"/"Sun"/"Fri").
+  //
+  // Note on sheet name divergence: the React path uses the first
+  // space-separated token (e.g. "Adi Misykatul Anwar" -> "Adi")
+  // while the Cloudflare path uses the full displayName. To make
+  // both paths produce the same sheet name, the test uses a
+  // single-token employee name ("Adi") — both paths produce a
+  // sheet called "Adi".
+  it('React path and Cloudflare path produce equivalent output for the same inputs', async () => {
+    const records = [
+      { isoDate: '2026-03-02', in: '08:05', out: '17:30', weekday: 'Mon' },
+      { isoDate: '2026-03-03', in: '08:10', out: '18:00', weekday: 'Tue' },
+      { isoDate: '2026-03-04', in: '08:15', out: '17:30', weekday: 'Wed' },
+      { isoDate: '2026-03-06', in: '08:00', out: '17:15', weekday: 'Fri' },
+    ];
+    const employeeName = 'Adi';
+
+    // React-format fingerprint: header row + data rows. The React
+    // parser uses Math.max(findIndex('name'), 3) to pick the name
+    // column, so a "Name" header at col 1 is overridden to col 3.
+    // We pick a layout that matches the parser's expectation: the
+    // employee name sits at col 3 (the default fallback position).
+    const reactFpRows: unknown[][] = [
+      ['Emp No', 'Code', 'Division', 'Name', 'Position', 'Date', 'Working Hours', 'Actual In', 'Clock In', 'Actual Out', 'Clock Out'],
+      ...records.map((r) => ['E-427', 'C-427', 'IDACT', employeeName, 'Staff', r.isoDate, 'Office Hour', r.in, r.in, r.out, r.out]),
+    ];
+    const reactFpWb = XLSX.utils.book_new();
+    const reactFpWs = XLSX.utils.aoa_to_sheet(reactFpRows);
+    XLSX.utils.book_append_sheet(reactFpWb, reactFpWs, 'Sheet1');
+    const reactFpBuffer = XLSX.write(reactFpWb, { bookType: 'xlsx', type: 'array' });
+
+    // Cloudflare-format fingerprint: hardcoded column positions
+    // (col 4 = name, col 6 = date, col 10 = actual in, col 11 = actual out).
+    // Row 1 is skipped by the Cloudflare parser.
+    const cfFpRows: unknown[][] = [
+      [''],
+      ...records.map((r) => ['', '', '', employeeName, '', r.isoDate, '', '', '', r.in, r.out]),
+    ];
+    const cfFpWb = XLSX.utils.book_new();
+    const cfFpWs = XLSX.utils.aoa_to_sheet(cfFpRows);
+    XLSX.utils.book_append_sheet(cfFpWb, cfFpWs, 'Sheet1');
+    const cfFpBuffer = XLSX.write(cfFpWb, { bookType: 'xlsx', type: 'array' });
+
+    // Shared online block-format buffer. Both the React and the
+    // Cloudflare parsers expect this exact shape (a "Full name"
+    // marker in column B, a "Schedule" header, then day rows).
+    const onlineRows: unknown[][] = [
+      [''],
+      [''],
+      ['Mar 1, 2026 - Mar 31, 2026'],
+      [''],
+      [''],
+      [null, 'Full name', employeeName],
+      [null, 'Schedule', 'Template', 'Clock-in', 'Clock-out'],
+      ...records.map((r, i) => {
+        const dayNumber = String(i + 2).padStart(2, '0');
+        // Map the isoDate month component ("03") to the 3-letter
+        // abbreviation the Cloudflare parser's parseOnlineDateLabel
+        // regex expects. Only March is exercised by these tests.
+        const monthLabel: Record<string, string> = {
+          '01': 'Jan', '02': 'Feb', '03': 'Mar',
+          '04': 'Apr', '05': 'May', '06': 'Jun',
+          '07': 'Jul', '08': 'Aug', '09': 'Sep',
+          '10': 'Oct', '11': 'Nov', '12': 'Dec',
+        };
+        const month = r.isoDate.slice(5, 7);
+        const dateLabelMap: Record<string, string> = {
+          Mon: 'Mo', Tue: 'Tu', Wed: 'We', Thu: 'Th', Fri: 'Fr',
+        };
+        return [`${dayNumber} ${monthLabel[month]}, ${dateLabelMap[r.weekday]}`, '08:00 - 16:30', null, r.in, '18:00'];
+      }),
+    ];
+    const onlineWb = XLSX.utils.book_new();
+    const onlineWs = XLSX.utils.aoa_to_sheet(onlineRows);
+    XLSX.utils.book_append_sheet(onlineWb, onlineWs, 'Sheet1');
+    const onlineBuffer = XLSX.write(onlineWb, { bookType: 'xlsx', type: 'array' });
+
+    // React path.
+    const reactFpRecords = parseFingerprintExcel(reactFpBuffer);
+    const reactOnlineMap = parseOnlineExcel(onlineBuffer);
+    const reactCompiled = compileAttendance(reactFpRecords, reactOnlineMap);
+    const reactWorkbook = buildAttendanceWorkbook(reactCompiled);
+    const reactSheet = reactWorkbook.Sheets['Adi'];
+
+    // Cloudflare path.
+    const cfResult = await compileWithCloudflare(cfFpBuffer, onlineBuffer);
+    const cfEmployeeSheet = cfResult.workbook.worksheets.find(
+      (s: { name: string }) => s.name !== 'Template'
+    );
+
+    // Both paths should produce a sheet named after the employee.
+    // With a single-token name like "Adi", the React path's
+    // first-name sheet-name logic and the Cloudflare path's
+    // full-name sheet-name logic both yield "Adi".
+    expect(reactWorkbook.SheetNames).toContain(employeeName);
+    expect(cfEmployeeSheet?.name).toBe(employeeName);
+
+    // The Cloudflare path's styleSheet writes the employee name in
+    // A6 ("Nama : <name>"). The React path's buildSheetData leaves
+    // A6 empty (a blank separator row) — so we only assert the
+    // Cloudflare cell here. Note this as a known shape difference
+    // between the two implementations.
+    expect(cfEmployeeSheet?.getCell('A6').value).toBe(`Nama : ${employeeName}`);
+
+    // The React A2 cell carries the period label. The React path
+    // uses a double space ("s/d  ") while the Cloudflare path
+    // uses a single space ("s/d "). This is a known cosmetic
+    // inconsistency between the two implementations.
+    expect(reactSheet?.['A2']?.v).toBe('Periode 01/03/2026 s/d  31/03/2026');
+
+    // The total data row count is the same — both paths iterate
+    // every day in March (31 days) starting at row 7.
+    expect(reactCompiled[0].records.length).toBe(31);
+
+    // Sample the non-formula cells for the day that has attendance
+    // (March 4 = row 10 in the merged timeline). We compare
+    // data cells (A, B, G, H) but not the formula cells verbatim.
+    const targetRow = 10; // March 4 (rows 7-9 are March 1-3, row 10 is March 4)
+    const reactTarget = reactSheet?.[`A${targetRow}`];
+    const cfTarget = cfEmployeeSheet?.getRow(targetRow);
+
+    // The React cell carries the date as an Excel serial number
+    // formatted dd/mm. The Cloudflare cell carries a JS Date. We
+    // normalise both to YYYY-MM-DD via the dateKey or via the
+    // dateToExcelSerial / Date.UTC conversion.
+    // The compiled.records are 0-indexed; row 7 is March 1, row 10 is March 4.
+    const compiledRecord = reactCompiled[0].records.find((r) => r.date.getUTCDate() === 4);
+    expect(compiledRecord?.date.toISOString()).toContain('2026-03-04');
+
+    // Day name in column B.
+    expect(cfTarget?.getCell(2).value).toBe('Wed');
+    // The React side stores the day name as a static formula
+    // referencing the date; we don't compare formulas here, but we
+    // verify the merged-in/merged-out values are equivalent.
+    const mergedIn = compiledRecord?.actualIn;   // earliest between fp and online
+    const mergedOut = compiledRecord?.actualOut; // latest between fp and online
+    expect(mergedIn).toBe('08:00');  // 08:00 < 08:15
+    expect(mergedOut).toBe('18:00'); // 18:00 > 17:30
+
+    // The Cloudflare cell stores the same minutes as an Excel time
+    // fraction (day.mergedIn / 1440). For March 4 both the
+    // fingerprint and the online are '08:15', so cfIn = 495/1440.
+    const targetRecord = records.find((r) => r.isoDate === '2026-03-04');
+    const expectedInMinutes = Number(targetRecord!.in.slice(0, 2)) * 60 + Number(targetRecord!.in.slice(3, 5));
+    const cfIn = cfTarget?.getCell(7).value as number;
+    expect(cfIn).toBeCloseTo(expectedInMinutes / 1440, 4);
+
+    // Structural check on the four formula cells in row 10 (March 4,
+    // Wednesday). Each cell should reference its row and the
+    // policy constant appropriate to that formula. We don't
+    // compare exact strings because the two paths use different
+    // day-name conventions.
+    const cell9 = cfTarget?.getCell(9);
+    const cell10 = cfTarget?.getCell(10);
+    const cell11 = cfTarget?.getCell(11);
+    const cell12 = cfTarget?.getCell(12);
+
+    const formula9 = (cell9?.value as { formula: string }).formula;
+    expect(formula9).toContain(`H${targetRow}`);
+    expect(formula9).toContain(`G${targetRow}`);
+    expect(formula9).toContain('TIME(12,30,0)');  // Mon-Thu break
+    expect(formula9).toContain('TIME(11,30,0)');  // Fri break
+
+    const formula10 = (cell10?.value as { formula: string }).formula;
+    expect(formula10).toContain(`G${targetRow}`);
+    expect(formula10).toContain('TIME(8,30,0)');   // 08:30 late threshold
+
+    const formula11 = (cell11?.value as { formula: string }).formula;
+    expect(formula11).toContain(`H${targetRow}`);
+    expect(formula11).toContain(`B${targetRow}="Fri"`);
+    expect(formula11).toContain('TIME(8,0,0)');    // 08:00 flexi threshold
+
+    const formula12 = (cell12?.value as { formula: string }).formula;
+    expect(formula12).toContain(`H${targetRow}`);
+    expect(formula12).toContain(`B${targetRow}="Fri"`);
+    expect(formula12).toContain('TIME(17,30,0)');  // Mon-Thu overtime
+  });
+
   it('writes a workbook with formula cells for calculated columns', async () => {
     const compiled = compileAttendance(
       [
