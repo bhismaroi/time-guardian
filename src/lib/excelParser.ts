@@ -465,15 +465,19 @@ export function getUniqueEmployees(records: RawFingerprintRecord[]): { empNo: st
 }
 
 /**
- * Get all dates from a month.
+ * Get all dates from a month. Iterates by day number rather than
+ * mutating a loop variable, which would be DST-fragile: in a DST
+ * timezone, the spring-forward or fall-back transition can skip a
+ * day (advance skips from 23:00 to 01:00) or repeat one (fall-back
+ * repeats 01:00-02:00). Building each Date from its (year, month,
+ * day) components avoids that pitfall.
  */
 export function getMonthDates(year: number, month: number): Date[] {
   const dates: Date[] = [];
-  const firstDay = new Date(year, month, 1);
-  const lastDay = new Date(year, month + 1, 0);
+  const lastDay = new Date(year, month + 1, 0).getDate();
 
-  for (let date = new Date(firstDay); date <= lastDay; date.setDate(date.getDate() + 1)) {
-    dates.push(new Date(date));
+  for (let day = 1; day <= lastDay; day++) {
+    dates.push(new Date(year, month, day));
   }
 
   return dates;

@@ -4,7 +4,7 @@ import * as XLSX from 'xlsx';
 import { calculateAttendance } from '@/lib/attendanceCalculator';
 import { compileAttendance } from '@/lib/attendanceCompiler';
 import { buildAttendanceWorkbook } from '@/lib/excelGenerator';
-import { parseFingerprintExcel, parseOnlineExcel } from '@/lib/excelParser';
+import { getMonthDates, parseFingerprintExcel, parseOnlineExcel } from '@/lib/excelParser';
 import { extractTime, parseTimeToMinutes } from '@/lib/timeUtils';
 import { compileWithCloudflare } from './cloudflare-harness';
 import type { RawFingerprintRecord } from '@/lib/types';
@@ -64,6 +64,35 @@ describe('attendance calculations', () => {
   it('ignores invalid clock times instead of calculating with impossible values', () => {
     expect(parseTimeToMinutes('25:99')).toBeNull();
     expect(extractTime('clocked 24:00')).toBeNull();
+  });
+
+  it('getMonthDates returns the right number of days for each month and is DST-safe', () => {
+    // The previous implementation walked the days by mutating a loop
+    // variable (date.setDate(date.getDate() + 1)) — a DST transition
+    // could skip or repeat a day in timezones that observe DST. The
+    // current implementation builds each Date from (year, month, day)
+    // components, which is DST-independent. These assertions cover
+    // the boundaries (28-day Feb in non-leap year, 29-day Feb in
+    // leap year, 30-day Apr, 31-day Mar).
+    expect(getMonthDates(2025, 2).length).toBe(31);   // March
+    expect(getMonthDates(2025, 3).length).toBe(30);   // April
+    expect(getMonthDates(2025, 1).length).toBe(28);   // Feb 2025 (non-leap)
+    expect(getMonthDates(2024, 1).length).toBe(29);   // Feb 2024 (leap)
+    expect(getMonthDates(2025, 0).length).toBe(31);   // January
+
+    // Day 1 of March 2026 should be a Sunday (verified against a
+    // known-good calendar).
+    const first = getMonthDates(2026, 2)[0];
+    expect(first.getFullYear()).toBe(2026);
+    expect(first.getMonth()).toBe(2);
+    expect(first.getDate()).toBe(1);
+    expect(first.getDay()).toBe(0); // 0 = Sunday
+
+    // Each call returns fresh Date instances (no shared mutable state).
+    const a = getMonthDates(2025, 0);
+    const b = getMonthDates(2025, 0);
+    expect(a[0]).not.toBe(b[0]);
+    expect(a[0].getTime()).toBe(b[0].getTime());
   });
 });
 
