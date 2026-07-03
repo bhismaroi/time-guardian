@@ -46,6 +46,12 @@ export function useAttendanceCompiler() {
     } catch (err) {
       console.error('Compilation error:', err);
       setError(err instanceof Error ? err.message : 'An error occurred during compilation');
+      // Drop any previously compiled data so the UI doesn't show
+      // stale employees while the red Alert banner is up. Without
+      // this, hitting "Compile" with a malformed file would keep
+      // showing the prior good run in the employee tabs while the
+      // error message was dismissed — misleading.
+      setCompiledData([]);
     } finally {
       setIsCompiling(false);
     }
