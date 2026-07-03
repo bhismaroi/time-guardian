@@ -113,18 +113,6 @@ function toDateKey(value: unknown): { date: Date; dateKey: string } | null {
   return { date: parsed, dateKey: formatDateIso(parsed) };
 }
 
-function pickTimeCell(row: unknown[], headers: string[], candidates: string[]): string | null {
-  for (const candidate of candidates) {
-    const index = headers.findIndex((header) => header.includes(candidate));
-    if (index !== -1) {
-      const raw = String(row[index] ?? '');
-      const time = extractTime(raw);
-      if (time) return time;
-    }
-  }
-  return null;
-}
-
 // Returns the index of the first header that includes any of the given
 // priority labels. Used by the fingerprint parser to pick the
 // policy-preferred column when several candidates may be present (e.g.
@@ -387,16 +375,26 @@ export function parseFingerprintExcel(file: ArrayBuffer): RawFingerprintRecord[]
     const parsedDate = toDateKey(dateValue);
     if (!parsedDate) continue;
 
+    // The header-row column detection (columnIndex.clockIn /
+    // clockOut) is authoritative — it picked the policy-preferred
+    // column once for the whole file. Per-row fallbacks to
+    // pickTimeCell() (which scans the row's cells for an "actual in"
+    // label) and the row[7] / row[8] magic indices are removed:
+    // they added O(rows * candidates * labels) work for each
+    // parsed row with no test coverage that justifies it. The
+    // previous Phase 1.7 throws if neither clockIn nor clockOut
+    // was found, so the case below is "exactly one of them exists"
+    // or "neither" (in which case we just produce nulls).
     const rawClockIn = columnIndex.clockIn >= 0 ? String(row[columnIndex.clockIn] ?? '') : '';
     const rawClockOut = columnIndex.clockOut >= 0 ? String(row[columnIndex.clockOut] ?? '') : '';
-    const fallbackClockIn = pickTimeCell(row, headerRow, ['actual in', 'clock in time', 'clock in']);
-    const fallbackClockOut = pickTimeCell(row, headerRow, ['actual out', 'clock out time', 'clock out']);
 
-    const actualIn = extractTime(rawClockIn) ?? fallbackClockIn;
-    const actualOut = extractTime(rawClockOut) ?? fallbackClockOut;
+    const actualIn = extractTime(rawClockIn);
+    const actualOut = extractTime(rawClockOut);
 
-    const clockIn = extractTime(rawClockIn) ?? extractTime(String(row[7] ?? '')) ?? actualIn;
-    const clockOut = extractTime(rawClockOut) ?? extractTime(String(row[8] ?? '')) ?? actualOut;
+    // Same as actualIn/actualOut: pickPriorityIndex already named
+    // the preferred column.
+    const clockIn = extractTime(rawClockIn);
+    const clockOut = extractTime(rawClockOut);
 
     records.push({
       empNo,
