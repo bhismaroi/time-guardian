@@ -188,10 +188,8 @@ function loadCloudflareBundle() {
   const policySource = readFileSync(resolve(repoRoot, 'cloudflare-pages-attendance/public/policy.js'), 'utf8');
   const compilerSource = readFileSync(resolve(repoRoot, 'cloudflare-pages-attendance/public/browserCompiler.js'), 'utf8');
 
-  // eslint-disable-next-line no-new-func
   const runPolicy = new Function(policySource);
   runPolicy.call(window);
-  // eslint-disable-next-line no-new-func
   const runCompiler = new Function(compilerSource);
   runCompiler.call(window);
 
@@ -236,13 +234,9 @@ export async function compileWithCloudflare(fingerprintBuffer, onlineBuffer, opt
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   const result = await (AC as any).buildCompiledWorkbookFromFiles(fingerprintFile, onlineFile);
   if (options.debug) {
-    // eslint-disable-next-line no-console
     console.log('=== Cloudflare compile result ===');
-    // eslint-disable-next-line no-console
     console.log('warnings:', JSON.stringify(result.warnings, null, 2));
-    // eslint-disable-next-line no-console
     console.log('summary:', JSON.stringify(result.summary, null, 2));
-    // eslint-disable-next-line no-console
     console.log('sheets:', result.workbook.worksheets.map((s: { name: string }) => s.name));
   }
   return result;
