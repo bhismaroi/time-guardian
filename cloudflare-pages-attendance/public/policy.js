@@ -217,6 +217,8 @@ if (typeof window !== 'undefined') {
     buildTardinessFormula,
     buildLeaveEarlierFormula,
     buildOvertimeFormula,
+    reactDayChecks,
+    cloudflareDayChecks,
     POLICY_DESCRIPTIONS,
   };
 }
