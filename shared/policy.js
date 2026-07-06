@@ -17,6 +17,14 @@
 // All time constants are minutes from midnight. Months are 0-based
 // (Jan = 0) in MONTH_LOOKUP and `month` indices throughout.
 
+/**
+ * @type {Readonly<Record<string, number>>}
+ *
+ * Without the explicit Record<string, number> type, TypeScript
+ * infers a literal-keyed object type and rejects string-indexed
+ * access with TS7053. The runtime object is frozen, so callers
+ * cannot mutate it.
+ */
 export const MONTH_LOOKUP = Object.freeze({
   jan: 0, january: 0,
   feb: 1, february: 1,

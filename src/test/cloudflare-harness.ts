@@ -16,30 +16,45 @@ import { readFileSync } from 'node:fs';
 import { resolve } from 'node:path';
 
 class StubCell {
-  constructor() {
-    this.value = null;
-    this.numFmt = null;
-    this.font = null;
-    this.fill = null;
-    this.border = null;
-    this.alignment = null;
-  }
+  // The real ExcelJS Cell type has a complex union (string | number |
+  // Date | { formula, result } | { text, richText } | CellRichTextValue
+  // | CellHyperlinkValue | CellErrorValue | null). For the test stub
+  // we just need an `any`-shaped field that the test code can read
+  // and write freely. Explicit `any` here is the right call — this
+  // is a mock, not production code.
+  value: any = null;
+  numFmt: string | undefined = undefined;
+  font: any = null;
+  fill: any = null;
+  border: any = null;
+  alignment: any = null;
 }
 
 class StubRow {
-  constructor(rowNumber) {
+  rowNumber: number;
+  _cells: Record<number, StubCell>;
+
+  constructor(rowNumber: number) {
     this.rowNumber = rowNumber;
     this._cells = {};
   }
 
-  getCell(col) {
+  getCell(col: number): StubCell {
     if (!this._cells[col]) this._cells[col] = new StubCell();
     return this._cells[col];
   }
 }
 
 class StubWorksheet {
-  constructor(name) {
+  name: string;
+  _rows: Record<number, StubRow>;
+  properties: Record<string, unknown>;
+  views: unknown[];
+  columns: { width: number }[];
+  _mergedCells: string[];
+  _conditionalFormatting: unknown[];
+
+  constructor(name: string) {
     this.name = name;
     this._rows = {};
     this.properties = {};
@@ -49,12 +64,12 @@ class StubWorksheet {
     this._conditionalFormatting = [];
   }
 
-  getRow(rowNumber) {
+  getRow(rowNumber: number): StubRow {
     if (!this._rows[rowNumber]) this._rows[rowNumber] = new StubRow(rowNumber);
     return this._rows[rowNumber];
   }
 
-  getCell(address) {
+  getCell(address: string): StubCell {
     // Parse the leading letters as a column and the trailing digits
     // as a row. A1 -> col A row 1. A1:M1 stays a range — not used
     // for cell reads.
@@ -64,21 +79,21 @@ class StubWorksheet {
     return this.getRow(Number(match[2])).getCell(colIndex);
   }
 
-  eachRow(callback) {
+  eachRow(callback: (row: StubRow, rowNumber: number) => void): void {
     for (const rowNumber of Object.keys(this._rows).map(Number).sort((a, b) => a - b)) {
       callback(this.getRow(rowNumber), rowNumber);
     }
   }
 
-  mergeCells(range) {
+  mergeCells(range: string): void {
     this._mergedCells.push(range);
   }
 
-  addConditionalFormatting(spec) {
+  addConditionalFormatting(spec: unknown): void {
     this._conditionalFormatting.push(spec);
   }
 
-  _colLetterToIndex(letters) {
+  _colLetterToIndex(letters: string): number {
     let n = 0;
     for (let i = 0; i < letters.length; i++) {
       n = n * 26 + (letters.charCodeAt(i) - 64);
@@ -88,6 +103,8 @@ class StubWorksheet {
 }
 
 class StubWorkbook {
+  worksheets: StubWorksheet[];
+
   constructor() {
     this.worksheets = [];
   }
@@ -96,17 +113,17 @@ class StubWorkbook {
   // bundle calls `workbook.xlsx.load(buffer)`; we shortcut that by
   // parsing the buffer with the real SheetJS library (a project
   // dependency) and feeding the result into this stub.
-  static fromXlsxBuffer(buffer) {
+  static fromXlsxBuffer(buffer: ArrayBuffer): StubWorkbook {
     const workbook = XLSX.read(buffer, { type: 'array', cellDates: true });
     const wb = new StubWorkbook();
-    workbook.SheetNames.forEach((name) => {
-      const sheet = XLSX.utils.sheet_to_json(workbook.Sheets[name], {
+    workbook.SheetNames.forEach((name: string) => {
+      const sheet = XLSX.utils.sheet_to_json<unknown[]>(workbook.Sheets[name], {
         header: 1,
         raw: true,
         defval: null,
       });
       const stubSheet = new StubWorksheet(name);
-      sheet.forEach((row, rowIndex) => {
+      sheet.forEach((row: unknown[] | null | undefined, rowIndex: number) => {
         const rowNumber = rowIndex + 1; // SheetJS is 0-based, ExcelJS is 1-based
         if (rowNumber === 1) {
           // The Cloudflare parser uses eachRow and skips rowNumber === 1
@@ -115,7 +132,7 @@ class StubWorkbook {
           // and getCell('A6') (not row 1).
         }
         if (!row) return;
-        row.forEach((value, colIndex) => {
+        row.forEach((value: unknown, colIndex: number) => {
           const col = colIndex + 1;
           if (value === null || value === undefined) return;
           // The Cloudflare code reads cell.value and handles Date,
@@ -130,14 +147,14 @@ class StubWorkbook {
     return wb;
   }
 
-  addWorksheet(name) {
+  addWorksheet(name: string): StubWorksheet {
     const sheet = new StubWorksheet(name);
     this.worksheets.push(sheet);
     return sheet;
   }
 
-  getWorksheet(name) {
-    return this.worksheets.find((s) => s.name === name) || null;
+  getWorksheet(name: string): StubWorksheet | null {
+    return this.worksheets.find((s: StubWorksheet) => s.name === name) || null;
   }
 
   // No-op for the stub. The TrackedWorkbook constructor in
@@ -153,9 +170,28 @@ class StubWorkbook {
   };
 }
 
-let loaded = null;
+// Module-level cache of the loaded AttendanceCompiler. The shape is
+// the one browserCompiler.js exposes (a buildCompiledWorkbookFromFiles
+// entry plus warnings/summary fields); see the call site at the
+// bottom of loadCloudflareBundle for the runtime assignment.
+type AttendanceCompiler = {
+  buildCompiledWorkbookFromFiles: (fingerprint: File, online: File, opts?: { onProgress?: (msg: string) => void }) => Promise<{
+    workbook: StubWorkbook;
+    fileName: string;
+    warnings: string[];
+    summary: {
+      employees: number;
+      matchedEmployees: number;
+      fingerprintOnlyEmployees: number;
+      onlineOnlyEmployees: number;
+      lowConfidenceMatches: number;
+      month: string;
+    };
+  }>;
+};
+let loaded: AttendanceCompiler | null = null;
 
-function loadCloudflareBundle() {
+function loadCloudflareBundle(): AttendanceCompiler {
   if (loaded) return loaded;
   if (typeof window === 'undefined') {
     throw new Error('loadCloudflareBundle must run in a browser/jsdom context');
@@ -168,7 +204,7 @@ function loadCloudflareBundle() {
   // constructor shifts from. The Cloudflare code may also call
   // `await workbook.xlsx.load(buffer)`; since the buffer was
   // already parsed at construction time, xlsx.load is a no-op.
-  const bufferQueue = [];
+  const bufferQueue: ArrayBuffer[] = [];
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   (window as any).__enqueueWorkbookBuffer = (buf: ArrayBuffer) => {
     bufferQueue.push(buf);
@@ -194,14 +230,14 @@ function loadCloudflareBundle() {
   runCompiler.call(window);
 
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  loaded = (window as any).AttendanceCompiler;
+  loaded = (window as unknown as { AttendanceCompiler: AttendanceCompiler }).AttendanceCompiler;
   if (!loaded || typeof loaded.buildCompiledWorkbookFromFiles !== 'function') {
     throw new Error('Cloudflare bundle did not expose buildCompiledWorkbookFromFiles');
   }
   return loaded;
 }
 
-function makeFileLike(buffer, name) {
+function makeFileLike(buffer: ArrayBuffer, name: string): File {
   // The Cloudflare code calls `await file.arrayBuffer()`. jsdom's
   // built-in File should support this, but in some jsdom versions
   // the third-arg options object is not accepted by the File
@@ -210,8 +246,7 @@ function makeFileLike(buffer, name) {
   // consume it.
   const file = new File([buffer], name, { type: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet' });
   if (typeof file.arrayBuffer !== 'function') {
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    (file as any).arrayBuffer = async () => buffer;
+    (file as unknown as { arrayBuffer: () => Promise<ArrayBuffer> }).arrayBuffer = async () => buffer;
   }
   return file;
 }
@@ -223,7 +258,11 @@ function makeFileLike(buffer, name) {
  * StubWorksheet) where each worksheet's cells can be inspected
  * directly.
  */
-export async function compileWithCloudflare(fingerprintBuffer, onlineBuffer, options: { debug?: boolean } = {}) {
+export async function compileWithCloudflare(
+  fingerprintBuffer: ArrayBuffer,
+  onlineBuffer: ArrayBuffer,
+  options: { debug?: boolean } = {}
+) {
   const AC = loadCloudflareBundle();
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   (window as any).__enqueueWorkbookBuffer(fingerprintBuffer);

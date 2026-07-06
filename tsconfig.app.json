@@ -20,7 +20,7 @@
     "strict": false,
     "noUnusedLocals": true,
     "noUnusedParameters": true,
-    "noImplicitAny": false,
+    "noImplicitAny": true,
     "noFallthroughCasesInSwitch": true,
 
     "baseUrl": ".",
