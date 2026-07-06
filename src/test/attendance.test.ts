@@ -649,7 +649,6 @@ describe('attendance compilation', () => {
     // (March 4 = row 10 in the merged timeline). We compare
     // data cells (A, B, G, H) but not the formula cells verbatim.
     const targetRow = 10; // March 4 (rows 7-9 are March 1-3, row 10 is March 4)
-    const reactTarget = reactSheet?.[`A${targetRow}`];
     const cfTarget = cfEmployeeSheet?.getRow(targetRow);
 
     // The React cell carries the date as an Excel serial number

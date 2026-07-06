@@ -5,7 +5,6 @@ import type { CompiledEmployee, MergedAttendanceRecord } from './types';
 import { dateToExcelSerial, formatDateFull, getDayName, parseTimeToMinutes } from './timeUtils';
 import { isFriday, isWeekend } from './policy';
 import {
-  buildBreakFormula as policyBuildBreakFormula,
   buildTotalHoursFormula as policyBuildTotalHoursFormula,
   buildTardinessFormula as policyBuildTardinessFormula,
   buildLeaveEarlierFormula as policyBuildLeaveEarlierFormula,
@@ -45,10 +44,11 @@ function toFormulaFraction(value: string | null | undefined): number | null {
 // IF(WEEKDAY(...)=5) and IF(WEEKDAY(...)<=4) branching repeated.
 // Centralising in policy.js means the Cloudflare bundle can produce
 // byte-identical formulas from the same source.
-
-function buildBreakFormula(row: number): string {
-  return policyBuildBreakFormula(row, reactDayChecks(row));
-}
+//
+// (The break formula is composed inside the policy's
+// buildTotalHoursFormula — there is no local wrapper here, the
+// earlier buildBreakFormula wrapper was deleted as dead code in
+// Phase 5.3c since the only caller was buildTotalHoursFormula.)
 
 function buildTotalHoursFormula(row: number): string {
   return policyBuildTotalHoursFormula(row, reactDayChecks(row));
@@ -98,7 +98,6 @@ function buildRowMetadata(record: MergedAttendanceRecord): { shift: string; offi
 }
 
 function buildSheetData(
-  employee: CompiledEmployee,
   records: MergedAttendanceRecord[],
   periodLabel: string
 ): XLSX.WorkSheet {
@@ -197,11 +196,11 @@ export function buildAttendanceWorkbook(employees: CompiledEmployee[]): XLSX.Wor
   const lastRecord = firstEmployee.records[firstEmployee.records.length - 1];
   const periodLabel = `${formatDateFull(firstRecord.date)} s/d  ${formatDateFull(lastRecord.date)}`;
 
-  const templateSheet = buildSheetData(firstEmployee, firstEmployee.records, periodLabel);
+  const templateSheet = buildSheetData(firstEmployee.records, periodLabel);
   XLSX.utils.book_append_sheet(workbook, templateSheet, 'Template');
 
   for (const employee of employees) {
-    const sheet = buildSheetData(employee, employee.records, periodLabel);
+    const sheet = buildSheetData(employee.records, periodLabel);
     XLSX.utils.book_append_sheet(workbook, sheet, employee.sheetName);
   }
 

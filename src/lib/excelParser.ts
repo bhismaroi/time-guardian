@@ -12,7 +12,6 @@ import {
   normalizeName,
   normalizeWhitespace,
   parseDate,
-  parseTimeToMinutes,
 } from './timeUtils';
 
 type DailyClock = { clockIn: string | null; clockOut: string | null };

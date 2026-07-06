@@ -20,7 +20,7 @@ import {
   determineFlexiType,
   isWeekend,
 } from './policy';
-import type { AttendanceCalculation, FlexiType } from './types';
+import type { AttendanceCalculation } from './types';
 
 // Re-export the policy helpers under their existing names.
 export { determineFlexiType, getAllowedClockOut, getOvertimeThreshold };

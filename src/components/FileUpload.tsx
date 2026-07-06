@@ -1,5 +1,5 @@
 import { useCallback } from 'react';
-import { Upload, FileSpreadsheet, Check } from 'lucide-react';
+import { FileSpreadsheet, Check } from 'lucide-react';
 import { cn } from '@/lib/utils';
 
 interface FileUploadProps {
