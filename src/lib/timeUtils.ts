@@ -1,31 +1,6 @@
 // Time and name helpers for attendance processing
 
-const MONTH_LOOKUP: Record<string, number> = {
-  jan: 0,
-  january: 0,
-  feb: 1,
-  february: 1,
-  mar: 2,
-  march: 2,
-  apr: 3,
-  april: 3,
-  may: 4,
-  jun: 5,
-  june: 5,
-  jul: 6,
-  july: 6,
-  aug: 7,
-  august: 7,
-  sep: 8,
-  sept: 8,
-  september: 8,
-  oct: 9,
-  october: 9,
-  nov: 10,
-  november: 10,
-  dec: 11,
-  december: 11,
-};
+import { MONTH_LOOKUP } from './policy';
 
 export function normalizeWhitespace(value: string): string {
   return value.replace(/\s+/g, ' ').trim();
@@ -50,9 +25,12 @@ export function extractNameParts(value: string | null | undefined): string[] {
 }
 
 /**
- * Parse a time string (HH:MM or HH:MM:SS) to minutes from midnight.
+ * Parse a time string (HH:MM or HH:MM:SS) into its component parts.
+ * Returns { hours, minutes, seconds } or null if the string is empty,
+ * is a placeholder (e.g. '__', '-'), or has invalid values.
+ * Both parseTimeToMinutes and extractTime are thin wrappers over this.
  */
-export function parseTimeToMinutes(time: string | null | undefined): number | null {
+function parseTimeParts(time: string | null | undefined): { hours: number; minutes: number; seconds: number } | null {
   if (!time) return null;
 
   const cleanTime = time.trim();
@@ -65,12 +43,25 @@ export function parseTimeToMinutes(time: string | null | undefined): number | nu
 
   const hours = Number(match[1]);
   const minutes = Number(match[2]);
+  const seconds = match[3] ? Number(match[3]) : 0;
 
-  if (!Number.isFinite(hours) || !Number.isFinite(minutes) || hours > 23 || minutes > 59) {
+  if (!Number.isFinite(hours) || !Number.isFinite(minutes) || !Number.isFinite(seconds)) {
+    return null;
+  }
+  if (hours > 23 || minutes > 59 || seconds > 59) {
     return null;
   }
 
-  return hours * 60 + minutes;
+  return { hours, minutes, seconds };
+}
+
+/**
+ * Parse a time string (HH:MM or HH:MM:SS) to minutes from midnight.
+ */
+export function parseTimeToMinutes(time: string | null | undefined): number | null {
+  const parts = parseTimeParts(time);
+  if (parts === null) return null;
+  return parts.hours * 60 + parts.minutes;
 }
 
 /**
@@ -84,42 +75,12 @@ export function minutesToTimeString(minutes: number): string {
 }
 
 /**
- * Convert an Excel time fraction into an HH:MM string.
- */
-export function excelTimeToString(value: number | null | undefined): string | null {
-  if (value === null || value === undefined || !Number.isFinite(value)) {
-    return null;
-  }
-
-  const totalMinutes = Math.round(value * 24 * 60);
-  const hours = Math.floor(totalMinutes / 60);
-  const minutes = totalMinutes % 60;
-  return `${hours.toString().padStart(2, '0')}:${minutes.toString().padStart(2, '0')}`;
-}
-
-/**
  * Convert a Date to an Excel serial date number.
  */
 export function dateToExcelSerial(date: Date): number {
   const utc = Date.UTC(date.getFullYear(), date.getMonth(), date.getDate());
   const excelEpoch = Date.UTC(1899, 11, 30);
   return (utc - excelEpoch) / (24 * 60 * 60 * 1000);
-}
-
-/**
- * Convert HH:MM to an Excel time fraction.
- */
-export function timeStringToExcelFraction(time: string | null | undefined): number | null {
-  const minutes = parseTimeToMinutes(time);
-  if (minutes === null) return null;
-  return minutes / (24 * 60);
-}
-
-/**
- * Get the day of week (0 = Sunday, 1 = Monday, etc.).
- */
-export function getDayOfWeek(date: Date): number {
-  return date.getDay();
 }
 
 /**
@@ -130,19 +91,14 @@ export function getDayName(date: Date): string {
   return days[date.getDay()];
 }
 
-export function getDayNameLong(date: Date): string {
-  const days = ['Sunday', 'Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday'];
-  return days[date.getDay()];
-}
-
-export function isFriday(date: Date): boolean {
-  return date.getDay() === 5;
-}
-
-export function isWeekend(date: Date): boolean {
-  const day = date.getDay();
-  return day === 0 || day === 6;
-}
+// The following helpers were removed in Phase 5.5 because they
+// became dead once shared/policy.js became the canonical source:
+//   - excelTimeToString        (was an unused Excel-formatter)
+//   - timeStringToExcelFraction (was an unused Excel-formatter)
+//   - getDayOfWeek             (was an unused JS Date wrapper)
+//   - getDayNameLong           (was an unused long-form variant)
+//   - isFriday                 (now in shared/policy.js as isFriday)
+//   - isWeekend                (now in shared/policy.js as isWeekend)
 
 /**
  * Calculate break overlap in minutes.
@@ -226,23 +182,16 @@ export function formatDateIso(date: Date): string {
 }
 
 /**
- * Extract time from a cell value that may contain extra text.
+ * Extract time from a cell value that may contain extra text. Returns
+ * the HH:MM portion (with zero-padded hour) or null if no valid time
+ * is found. Delegates to parseTimeParts so the regex and validation
+ * are defined in exactly one place.
  */
 export function extractTime(timeStr: string | null | undefined): string | null {
-  if (!timeStr) return null;
-  const trimmed = normalizeWhitespace(timeStr);
-  if (!trimmed || trimmed === '__' || trimmed.includes('__') || trimmed === '-') return null;
-
-  const timeMatch = trimmed.match(/(\d{1,2}):(\d{2})(?::(\d{2}))?/);
-  if (!timeMatch) return null;
-
-  const hours = Number(timeMatch[1]);
-  const minutes = Number(timeMatch[2]);
-  if (!Number.isFinite(hours) || !Number.isFinite(minutes) || hours > 23 || minutes > 59) {
-    return null;
-  }
-
-  return `${timeMatch[1].padStart(2, '0')}:${timeMatch[2]}`;
+  const normalized = timeStr ? normalizeWhitespace(timeStr) : '';
+  const parts = parseTimeParts(normalized);
+  if (parts === null) return null;
+  return `${String(parts.hours).padStart(2, '0')}:${String(parts.minutes).padStart(2, '0')}`;
 }
 
 /**

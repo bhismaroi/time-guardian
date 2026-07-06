@@ -2,56 +2,55 @@
 
 import * as XLSX from 'xlsx';
 import type { RawFingerprintRecord } from './types';
+import { MONTH_LOOKUP } from './policy';
 import {
   extractNameParts,
   extractTime,
   formatDateIso,
+  getEarlierTime,
+  getLaterTime,
   normalizeName,
   normalizeWhitespace,
   parseDate,
-  parseTimeToMinutes,
 } from './timeUtils';
 
 type DailyClock = { clockIn: string | null; clockOut: string | null };
 
-const MONTH_LOOKUP: Record<string, number> = {
-  jan: 0,
-  january: 0,
-  feb: 1,
-  february: 1,
-  mar: 2,
-  march: 2,
-  apr: 3,
-  april: 3,
-  may: 4,
-  jun: 5,
-  june: 5,
-  jul: 6,
-  july: 6,
-  aug: 7,
-  august: 7,
-  sep: 8,
-  sept: 8,
-  september: 8,
-  oct: 9,
-  october: 9,
-  nov: 10,
-  november: 10,
-  dec: 11,
-  december: 11,
+/**
+ * The reporting period covered by the online workbook. For single-month
+ * workbooks, start and end are equal. For multi-month reports that cross a
+ * year boundary (e.g. "Dec 1, 2025 - Jan 31, 2026"), the two halves are used
+ * to resolve which calendar year a given month label belongs to. Months are
+ * 0-based (Jan = 0).
+ */
+type ReportContext = {
+  startMonth: number;
+  startYear: number;
+  endMonth: number;
+  endYear: number;
 };
 
-function parseReportContext(data: unknown[][]): { month: number; year: number } | null {
+function parseReportContext(data: unknown[][]): ReportContext | null {
   for (let rowIndex = 0; rowIndex < Math.min(data.length, 6); rowIndex++) {
     const row = data[rowIndex];
     if (!row) continue;
 
     const text = row.map((cell) => String(cell ?? '')).join(' ');
-    const rangeMatch = text.match(/([A-Za-z]{3,9})\s+\d{1,2},\s*(\d{4})\s*-\s*[A-Za-z]{3,9}\s+\d{1,2},\s*(\d{4})/);
+    // Capture groups: 1=startMonth, 2=startYear, 3=endMonth, 4=endYear.
+    // The original regex had only three groups and read "endYear" where the
+    // end month should have been, so cross-year ranges silently fell through
+    // to the single-match path and lost the second year.
+    const rangeMatch = text.match(/([A-Za-z]{3,9})\s+\d{1,2},\s*(\d{4})\s*-\s*([A-Za-z]{3,9})\s+\d{1,2},\s*(\d{4})/);
     if (rangeMatch) {
-      const month = MONTH_LOOKUP[rangeMatch[1].toLowerCase()];
-      if (month !== undefined) {
-        return { month, year: Number(rangeMatch[2]) };
+      const startMonth = MONTH_LOOKUP[rangeMatch[1].toLowerCase()];
+      const endMonth = MONTH_LOOKUP[rangeMatch[3].toLowerCase()];
+      if (startMonth !== undefined && endMonth !== undefined) {
+        return {
+          startMonth,
+          startYear: Number(rangeMatch[2]),
+          endMonth,
+          endYear: Number(rangeMatch[4]),
+        };
       }
     }
 
@@ -59,7 +58,8 @@ function parseReportContext(data: unknown[][]): { month: number; year: number } 
     if (singleMatch) {
       const month = MONTH_LOOKUP[singleMatch[1].toLowerCase()];
       if (month !== undefined) {
-        return { month, year: Number(singleMatch[2]) };
+        const year = Number(singleMatch[2]);
+        return { startMonth: month, startYear: year, endMonth: month, endYear: year };
       }
     }
   }
@@ -67,7 +67,21 @@ function parseReportContext(data: unknown[][]): { month: number; year: number } 
   return null;
 }
 
-function parseDateFromLabel(label: string, year: number): string | null {
+/**
+ * Resolve the calendar year for a month label inside a reporting range.
+ * For a single-month range (start === end) this returns the only year. For
+ * a cross-year range like "Dec 2025 - Jan 2026", months >= startMonth map
+ * to startYear and the rest map to endYear. Without this, a "Dec 1, 2025 -
+ * Jan 31, 2026" report would tag January 1 as 2025-01-01, never matching
+ * the fingerprint calendar dates.
+ */
+function resolveReportYear(month: number, context: ReportContext | null): number {
+  if (!context) return new Date().getFullYear();
+  if (context.startMonth === context.endMonth) return context.startYear;
+  return month >= context.startMonth ? context.startYear : context.endYear;
+}
+
+function parseDateFromLabel(label: string, context: ReportContext | null): string | null {
   const match = label.match(/(\d{1,2})\s+([A-Za-z]{3,9})/);
   if (!match) return null;
 
@@ -75,6 +89,7 @@ function parseDateFromLabel(label: string, year: number): string | null {
   const month = MONTH_LOOKUP[match[2].toLowerCase()];
   if (month === undefined) return null;
 
+  const year = resolveReportYear(month, context);
   return formatDateIso(new Date(year, month, day));
 }
 
@@ -97,16 +112,16 @@ function toDateKey(value: unknown): { date: Date; dateKey: string } | null {
   return { date: parsed, dateKey: formatDateIso(parsed) };
 }
 
-function pickTimeCell(row: unknown[], headers: string[], candidates: string[]): string | null {
-  for (const candidate of candidates) {
-    const index = headers.findIndex((header) => header.includes(candidate));
-    if (index !== -1) {
-      const raw = String(row[index] ?? '');
-      const time = extractTime(raw);
-      if (time) return time;
-    }
+// Returns the index of the first header that includes any of the given
+// priority labels. Used by the fingerprint parser to pick the
+// policy-preferred column when several candidates may be present (e.g.
+// "actual in" is preferred over "clock in"). Returns -1 if none match.
+function pickPriorityIndex(headers: string[], priority: string[]): number {
+  for (const label of priority) {
+    const index = headers.findIndex((header) => header.includes(label));
+    if (index !== -1) return index;
   }
-  return null;
+  return -1;
 }
 
 function mergeClock(existing: DailyClock | undefined, next: DailyClock): DailyClock {
@@ -116,26 +131,6 @@ function mergeClock(existing: DailyClock | undefined, next: DailyClock): DailyCl
   const mergedOut = getLaterTime(existing.clockOut, next.clockOut);
 
   return { clockIn: mergedIn, clockOut: mergedOut };
-}
-
-function getEarlierTime(time1: string | null, time2: string | null): string | null {
-  const min1 = parseTimeToMinutes(time1);
-  const min2 = parseTimeToMinutes(time2);
-
-  if (min1 === null && min2 === null) return null;
-  if (min1 === null) return time2;
-  if (min2 === null) return time1;
-  return min1 <= min2 ? time1 : time2;
-}
-
-function getLaterTime(time1: string | null, time2: string | null): string | null {
-  const min1 = parseTimeToMinutes(time1);
-  const min2 = parseTimeToMinutes(time2);
-
-  if (min1 === null && min2 === null) return null;
-  if (min1 === null) return time2;
-  if (min2 === null) return time1;
-  return min1 >= min2 ? time1 : time2;
 }
 
 function getHeaderRow(data: unknown[][], labels: string[]): number {
@@ -159,11 +154,16 @@ function addAliases(
   if (!normalized) return;
 
   const parts = extractNameParts(normalized);
+  // We deliberately do NOT register single-token aliases (first name or last
+  // name alone). Two distinct employees can share a first or last name, and
+  // adding single-token aliases was the root cause of `findOnlineMatch`
+  // attributing one employee's online data to multiple fingerprint employees.
+  // The full-name and reversed full-name aliases below cover the legitimate
+  // "Adi Wijaya" vs "Wijaya Adi" name-order flip.
   const aliases = new Set<string>([
     normalized,
     parts.join(' '),
     parts.slice().reverse().join(' '),
-    ...parts,
   ]);
 
   for (const alias of aliases) {
@@ -174,7 +174,7 @@ function addAliases(
 
 function parseOnlineMatrixFormat(
   data: unknown[][],
-  reportContext: { month: number; year: number } | null
+  reportContext: ReportContext | null
 ): Map<string, Map<string, { clockIn: string | null; clockOut: string | null }>> {
   const result = new Map<string, Map<string, { clockIn: string | null; clockOut: string | null }>>();
 
@@ -184,7 +184,6 @@ function parseOnlineMatrixFormat(
   const dateRow = data[dateRowIndex];
   if (!dateRow) return result;
 
-  const reportYear = reportContext?.year ?? new Date().getFullYear();
   const columnToDateKey = new Map<number, string>();
 
   for (let col = 2; col < dateRow.length; col++) {
@@ -196,7 +195,10 @@ function parseOnlineMatrixFormat(
     const month = MONTH_LOOKUP[match[2].toLowerCase()];
     if (month === undefined) continue;
 
-    columnToDateKey.set(col, formatDateIso(new Date(reportYear, month, day)));
+    // Resolve the year via the report context so cross-year ranges (e.g.
+    // "Dec 1, 2025 - Jan 31, 2026") tag each column with the correct year.
+    const year = resolveReportYear(month, reportContext);
+    columnToDateKey.set(col, formatDateIso(new Date(year, month, day)));
   }
 
   for (let rowIndex = employeeStartRow; rowIndex < data.length; rowIndex++) {
@@ -246,11 +248,9 @@ function parseOnlineMatrixFormat(
 
 function parseOnlineBlockFormat(
   data: unknown[][],
-  reportContext: { month: number; year: number } | null
+  reportContext: ReportContext | null
 ): Map<string, Map<string, { clockIn: string | null; clockOut: string | null }>> {
   const result = new Map<string, Map<string, { clockIn: string | null; clockOut: string | null }>>();
-  const reportYear = reportContext?.year ?? new Date().getFullYear();
-  const reportMonth = reportContext?.month ?? new Date().getMonth();
 
   for (let rowIndex = 0; rowIndex < data.length; rowIndex++) {
     const row = data[rowIndex];
@@ -295,7 +295,7 @@ function parseOnlineBlockFormat(
         continue;
       }
 
-      const dateKey = parseDateFromLabel(dateLabel, reportYear);
+      const dateKey = parseDateFromLabel(dateLabel, reportContext);
       if (!dateKey) continue;
       const clockIn = extractTime(String(current[3] ?? ''));
       const clockOut = extractTime(String(current[4] ?? ''));
@@ -326,20 +326,37 @@ export function parseFingerprintExcel(file: ArrayBuffer): RawFingerprintRecord[]
   if (data.length === 0) return [];
 
   const headerRow = data[0].map((cell) => normalizeName(String(cell ?? '')));
+  // For columns with a single candidate label (emp no, name, date, working
+  // hours), the previous Math.max(idx, default) idiom was fine — either the
+  // header is found or we fall back to a default position.
+  //
+  // For clockIn/clockOut the previous code did
+  //   Math.max(actualInIdx, clockInIdx)
+  // which is a position-based choice, not a priority-based one. If the
+  // workbook has "Actual In" at column C and "Clock In" at column D, the
+  // parser read the "Clock In" column — the opposite of the policy intent.
+  // The priority is: 'actual in' (post-shift time) is preferred over
+  // 'clock in' (raw punch time). pickPriorityIndex returns the first match
+  // in priority order, or -1 if none are present.
   const columnIndex = {
     empNo: Math.max(headerRow.findIndex((header) => header.includes('emp no')), 0),
     name: Math.max(headerRow.findIndex((header) => header === 'name'), 3),
     date: Math.max(headerRow.findIndex((header) => header.includes('date')), 5),
     workingHours: Math.max(headerRow.findIndex((header) => header.includes('working hours')), 6),
-    clockIn: Math.max(
-      headerRow.findIndex((header) => header.includes('actual in')),
-      headerRow.findIndex((header) => header.includes('clock in'))
-    ),
-    clockOut: Math.max(
-      headerRow.findIndex((header) => header.includes('actual out')),
-      headerRow.findIndex((header) => header.includes('clock out'))
-    ),
+    clockIn: pickPriorityIndex(headerRow, ['actual in', 'clock in time', 'clock in']),
+    clockOut: pickPriorityIndex(headerRow, ['actual out', 'clock out time', 'clock out']),
   };
+
+  // Surface a clear error if the workbook has no recognisable clock-in/out
+  // columns. Pre-fix, both indices resolved to -1, every record carried
+  // null clock times, and the workbook was still produced — the user got a
+  // zero-everywhere report with no indication of the structural problem.
+  if (columnIndex.clockIn < 0 && columnIndex.clockOut < 0) {
+    throw new Error(
+      'Fingerprint file is missing both "Actual In/Out" and "Clock In/Out" columns. '
+      + `Detected headers: [${headerRow.join(', ')}]`
+    );
+  }
 
   const records: RawFingerprintRecord[] = [];
 
@@ -357,16 +374,26 @@ export function parseFingerprintExcel(file: ArrayBuffer): RawFingerprintRecord[]
     const parsedDate = toDateKey(dateValue);
     if (!parsedDate) continue;
 
+    // The header-row column detection (columnIndex.clockIn /
+    // clockOut) is authoritative — it picked the policy-preferred
+    // column once for the whole file. Per-row fallbacks to
+    // pickTimeCell() (which scans the row's cells for an "actual in"
+    // label) and the row[7] / row[8] magic indices are removed:
+    // they added O(rows * candidates * labels) work for each
+    // parsed row with no test coverage that justifies it. The
+    // previous Phase 1.7 throws if neither clockIn nor clockOut
+    // was found, so the case below is "exactly one of them exists"
+    // or "neither" (in which case we just produce nulls).
     const rawClockIn = columnIndex.clockIn >= 0 ? String(row[columnIndex.clockIn] ?? '') : '';
     const rawClockOut = columnIndex.clockOut >= 0 ? String(row[columnIndex.clockOut] ?? '') : '';
-    const fallbackClockIn = pickTimeCell(row, headerRow, ['actual in', 'clock in time', 'clock in']);
-    const fallbackClockOut = pickTimeCell(row, headerRow, ['actual out', 'clock out time', 'clock out']);
 
-    const actualIn = extractTime(rawClockIn) ?? fallbackClockIn;
-    const actualOut = extractTime(rawClockOut) ?? fallbackClockOut;
+    const actualIn = extractTime(rawClockIn);
+    const actualOut = extractTime(rawClockOut);
 
-    const clockIn = extractTime(rawClockIn) ?? extractTime(String(row[7] ?? '')) ?? actualIn;
-    const clockOut = extractTime(rawClockOut) ?? extractTime(String(row[8] ?? '')) ?? actualOut;
+    // Same as actualIn/actualOut: pickPriorityIndex already named
+    // the preferred column.
+    const clockIn = extractTime(rawClockIn);
+    const clockOut = extractTime(rawClockOut);
 
     records.push({
       empNo,
@@ -398,11 +425,21 @@ export function parseOnlineExcel(
   if (data.length === 0) return new Map();
 
   const reportContext = parseReportContext(data);
-  const isBlockFormat = data.some((row) => normalizeName(String(row?.[1] ?? '')) === 'full name');
 
-  return isBlockFormat
-    ? parseOnlineBlockFormat(data, reportContext)
-    : parseOnlineMatrixFormat(data, reportContext);
+  // Try the block parser first. The block format requires a "Full name" cell
+  // in column B *and* a "Schedule" header within 10 rows of it. A single
+  // stray "Full name" cell in an otherwise matrix-format workbook satisfies
+  // the first condition but never the second, so a block parse on such a
+  // file returns an empty map. Falling through to the matrix parser in that
+  // case recovers the data; the previous code returned zero records and no
+  // error if a matrix file had a stray "Full name" cell.
+  const blockResult = parseOnlineBlockFormat(data, reportContext);
+  let totalBlockRecords = 0;
+  for (const employeeRecords of blockResult.values()) {
+    totalBlockRecords += employeeRecords.size;
+  }
+  if (totalBlockRecords > 0) return blockResult;
+  return parseOnlineMatrixFormat(data, reportContext);
 }
 
 /**
@@ -425,15 +462,19 @@ export function getUniqueEmployees(records: RawFingerprintRecord[]): { empNo: st
 }
 
 /**
- * Get all dates from a month.
+ * Get all dates from a month. Iterates by day number rather than
+ * mutating a loop variable, which would be DST-fragile: in a DST
+ * timezone, the spring-forward or fall-back transition can skip a
+ * day (advance skips from 23:00 to 01:00) or repeat one (fall-back
+ * repeats 01:00-02:00). Building each Date from its (year, month,
+ * day) components avoids that pitfall.
  */
 export function getMonthDates(year: number, month: number): Date[] {
   const dates: Date[] = [];
-  const firstDay = new Date(year, month, 1);
-  const lastDay = new Date(year, month + 1, 0);
+  const lastDay = new Date(year, month + 1, 0).getDate();
 
-  for (let date = new Date(firstDay); date <= lastDay; date.setDate(date.getDate() + 1)) {
-    dates.push(new Date(date));
+  for (let day = 1; day <= lastDay; day++) {
+    dates.push(new Date(year, month, day));
   }
 
   return dates;

@@ -3,6 +3,7 @@ import { EmployeeTabs } from '@/components/EmployeeTabs';
 import { useAttendanceCompiler } from '@/hooks/useAttendanceCompiler';
 import { Button } from '@/components/ui/button';
 import { Alert, AlertDescription } from '@/components/ui/alert';
+import { POLICY_DESCRIPTIONS } from '@/lib/policy';
 import { Clock3, Download, RotateCcw, Loader2, AlertCircle } from 'lucide-react';
 
 const Index = () => {
@@ -113,30 +114,26 @@ const Index = () => {
             <div>
               <h4 className="font-medium text-foreground mb-2">Break Deductions</h4>
               <ul className="space-y-1">
-                <li>- Monday to Thursday: 12:00 - 12:30 (30 min)</li>
-                <li>- Friday: 11:30 - 13:00 (90 min)</li>
+                <li>- {POLICY_DESCRIPTIONS.breakMonThu}</li>
+                <li>- {POLICY_DESCRIPTIONS.breakFri}</li>
               </ul>
             </div>
             <div>
               <h4 className="font-medium text-foreground mb-2">Flexi Time</h4>
               <ul className="space-y-1">
-                <li>- Flexi 1: 08:00 - 08:15, out by 16:45 (Fri: 17:15)</li>
-                <li>- Flexi 2: 08:15 - 08:30, out by 17:00 (Fri: 17:30)</li>
-                <li>- After 08:30 = Tardiness</li>
+                <li>- {POLICY_DESCRIPTIONS.flexiTime}</li>
               </ul>
             </div>
             <div>
               <h4 className="font-medium text-foreground mb-2">Overtime</h4>
               <ul className="space-y-1">
-                <li>- Monday to Thursday: starts from 17:30</li>
-                <li>- Friday: starts from 18:00</li>
+                <li>- {POLICY_DESCRIPTIONS.overtime}</li>
               </ul>
             </div>
             <div>
               <h4 className="font-medium text-foreground mb-2">Data Merging</h4>
               <ul className="space-y-1">
-                <li>- Earliest clock-in from both sources</li>
-                <li>- Latest clock-out from both sources</li>
+                <li>- {POLICY_DESCRIPTIONS.dataMerging}</li>
               </ul>
             </div>
           </div>

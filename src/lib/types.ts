@@ -1,22 +1,12 @@
 // Core types for the attendance system
-
-export interface EmployeeAttendanceRecord {
-  date: Date;
-  dayOfWeek: string;
-  actualIn: string | null;
-  actualOut: string | null;
-  totalHours: string;
-  tardiness: string | null;
-  leaveEarlier: string | null;
-  overtime: string | null;
-  remarks: string;
-}
-
-export interface EmployeeData {
-  empNo: string;
-  name: string;
-  records: EmployeeAttendanceRecord[];
-}
+//
+// The runtime shapes that ended up being used are MergedAttendanceRecord
+// (one row per employee per day in the compiled output) and
+// CompiledEmployee (one entry per employee). The other interfaces
+// (EmployeeAttendanceRecord, EmployeeData, RawOnlineRecord) were
+// vestigial: they were declared early in the project but never
+// matched the actual shape returned by the compiler. Removed in
+// Phase 5.5.
 
 export interface RawFingerprintRecord {
   empNo: string;
@@ -28,14 +18,6 @@ export interface RawFingerprintRecord {
   clockOut: string | null;
   actualIn: string | null;
   actualOut: string | null;
-}
-
-export interface RawOnlineRecord {
-  lastName: string;
-  firstName: string;
-  date: string;
-  clockIn: string;
-  clockOut: string;
 }
 
 export interface MergedAttendanceRecord {

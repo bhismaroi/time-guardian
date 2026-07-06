@@ -1,94 +1,35 @@
 // Business logic for attendance calculations
+//
+// The policy module (shared/policy.js, re-exported via src/lib/policy.ts)
+// is the source of truth for the break window, flexi thresholds, and
+// clock-out rules. We re-import the runtime values here and re-export
+// the policy helpers under their existing names so callers in this
+// codebase (the compiler, tests, etc.) keep working without an
+// import rewrite.
 
 import {
   parseTimeToMinutes,
   minutesToTimeString,
-  isFriday,
-  isWeekend,
   calculateBreakOverlap,
 } from './timeUtils';
-import type { AttendanceCalculation, FlexiType } from './types';
+import {
+  LATE_THRESHOLD,
+  getBreakWindow,
+  getAllowedClockOut,
+  getOvertimeThreshold,
+  determineFlexiType,
+  isWeekend,
+} from './policy';
+import type { AttendanceCalculation } from './types';
 
-// Break time constants (in minutes from midnight)
-const BREAK_MON_THU_START = 12 * 60; // 12:00
-const BREAK_MON_THU_END = 12 * 60 + 30; // 12:30
-const BREAK_FRI_START = 11 * 60 + 30; // 11:30
-const BREAK_FRI_END = 13 * 60; // 13:00
+// Re-export the policy helpers under their existing names.
+export { determineFlexiType, getAllowedClockOut, getOvertimeThreshold };
 
-// Flexi time thresholds (in minutes from midnight)
-const STANDARD_CLOCKIN_END = 8 * 60; // 08:00
-const FLEXI_1_START = 8 * 60 + 1; // 08:01
-const FLEXI_1_END = 8 * 60 + 15; // 08:15
-const FLEXI_2_START = 8 * 60 + 16; // 08:16
-const FLEXI_2_END = 8 * 60 + 30; // 08:30
-const LATE_THRESHOLD = 8 * 60 + 30; // 08:30
-
-// Allowed clock-out times
-const STANDARD_CLOCKOUT_MON_THU = 16 * 60 + 30; // 16:30
-const STANDARD_CLOCKOUT_FRI = 17 * 60; // 17:00
-const FLEXI_1_CLOCKOUT_MON_THU = 16 * 60 + 45; // 16:45
-const FLEXI_1_CLOCKOUT_FRI = 17 * 60 + 15; // 17:15
-const FLEXI_2_CLOCKOUT_MON_THU = 17 * 60; // 17:00
-const FLEXI_2_CLOCKOUT_FRI = 17 * 60 + 30; // 17:30
-
-// Overtime thresholds
-const OVERTIME_START_MON_THU = 17 * 60 + 30; // 17:30
-const OVERTIME_START_FRI = 18 * 60; // 18:00
-
-/**
- * Determine the flexi type based on clock-in time
- */
-export function determineFlexiType(clockInMinutes: number): FlexiType {
-  if (clockInMinutes <= STANDARD_CLOCKIN_END) {
-    return 'standard';
-  }
-  if (clockInMinutes >= FLEXI_1_START && clockInMinutes <= FLEXI_1_END) {
-    return 'flexi1';
-  }
-  if (clockInMinutes >= FLEXI_2_START && clockInMinutes <= FLEXI_2_END) {
-    return 'flexi2';
-  }
-  return 'late';
-}
-
-/**
- * Get the break duration for a given date
- */
+// getBreakWindow returns the same { start, end, duration } shape the
+// local getBreakDuration used to. Exposed under the old name for
+// backward compat with external callers.
 export function getBreakDuration(date: Date): { start: number; end: number; duration: number } {
-  if (isFriday(date)) {
-    return {
-      start: BREAK_FRI_START,
-      end: BREAK_FRI_END,
-      duration: 90, // 90 minutes
-    };
-  }
-  // Monday to Thursday
-  return {
-    start: BREAK_MON_THU_START,
-    end: BREAK_MON_THU_END,
-    duration: 30, // 30 minutes
-  };
-}
-
-/**
- * Get the allowed clock-out time based on flexi type and day
- */
-export function getAllowedClockOut(flexiType: FlexiType, date: Date): number {
-  if (isFriday(date)) {
-    if (flexiType === 'standard') return STANDARD_CLOCKOUT_FRI;
-    if (flexiType === 'flexi1') return FLEXI_1_CLOCKOUT_FRI;
-    return FLEXI_2_CLOCKOUT_FRI;
-  }
-  if (flexiType === 'standard') return STANDARD_CLOCKOUT_MON_THU;
-  if (flexiType === 'flexi1') return FLEXI_1_CLOCKOUT_MON_THU;
-  return FLEXI_2_CLOCKOUT_MON_THU;
-}
-
-/**
- * Get the overtime start threshold for a given date
- */
-export function getOvertimeThreshold(date: Date): number {
-  return isFriday(date) ? OVERTIME_START_FRI : OVERTIME_START_MON_THU;
+  return getBreakWindow(date);
 }
 
 /**

@@ -1,7 +1,8 @@
 // Attendance data compilation logic
 
 import type { CompiledEmployee, MergedAttendanceRecord, RawFingerprintRecord } from './types';
-import { formatDateIso, getDayName, getEarlierTime, getLaterTime, isWeekend, normalizeName, parseDate, extractNameParts } from './timeUtils';
+import { formatDateIso, getDayName, getEarlierTime, getLaterTime, normalizeName, parseDate, extractNameParts } from './timeUtils';
+import { isWeekend } from './policy';
 import { calculateAttendance, formatCalculationResults } from './attendanceCalculator';
 import { getUniqueEmployees, getMonthDates } from './excelParser';
 
@@ -14,6 +15,14 @@ function getFingerprintDateKey(record: RawFingerprintRecord): string {
 function getEmployeeTokens(name: string): string[] {
   return extractNameParts(name).filter((token) => token.length > 1);
 }
+
+// Minimum score for a fuzzy name match. The score is the sum of first-name
+// and last-name matches (each 0 or 40). To accept a fuzzy match, the
+// candidate must match on BOTH the first and the last name (score 80). A
+// single shared first or last name alone (40) is not enough: that is the
+// failure mode that previously attributed "Adi Saputra"'s online data to
+// "Adi Wijaya" (both share first name "adi" — 40 points).
+const MIN_FUZZY_MATCH_SCORE = 80;
 
 function scoreNameMatch(fingerprintName: string, onlineKey: string): number {
   const fingerprintTokens = getEmployeeTokens(fingerprintName);
@@ -33,40 +42,72 @@ function scoreNameMatch(fingerprintName: string, onlineKey: string): number {
   let score = 0;
   if (fingerprintFirst === onlineFirst) score += 40;
   if (fingerprintLast === onlineLast) score += 40;
-  if (fingerprintTokens.some((token) => onlineTokens.includes(token))) score += 20;
-  if (fingerprintTokens.some((token) => onlineTokens.some((candidate) => candidate.includes(token) || token.includes(candidate)))) {
-    score += 10;
-  }
+  // The token-shared clause (previously +20 for any shared token) and the
+  // substring clause (previously +10 for any substring containment) are
+  // removed. Both produced false positives: "Adi Saputra" matching "Adi
+  // Pratama" (only first token shared) and "Eric" matching "Erica"
+  // (substring). First+last name matching alone is sufficient for the
+  // legitimate same-person cases: "Adi Misykatul Anwar" vs "Adi Anwar"
+  // scores 80, and the reversed-name case is handled by the explicit
+  // reversed-alias check in findOnlineMatch.
 
   return score;
 }
 
 function findOnlineMatch(
   fingerprintName: string,
-  onlineData: Map<string, Map<string, OnlineDayRecord>>
+  onlineData: Map<string, Map<string, OnlineDayRecord>>,
+  usedKeys: Set<string>
 ): Map<string, OnlineDayRecord> | undefined {
   const normalizedFingerprint = normalizeName(fingerprintName);
   if (!normalizedFingerprint) return undefined;
 
-  if (onlineData.has(normalizedFingerprint)) {
+  // 1. Exact normalized full-name match.
+  if (onlineData.has(normalizedFingerprint) && !usedKeys.has(normalizedFingerprint)) {
+    usedKeys.add(normalizedFingerprint);
     return onlineData.get(normalizedFingerprint);
   }
 
-  let bestMatch: { key: string; score: number } | null = null;
+  // 2. Reversed full-name match ("Adi Wijaya" vs "Wijaya Adi"). The alias
+  //    seeder registers reversed full names too, so this is a hash lookup.
+  const tokens = getEmployeeTokens(fingerprintName);
+  const reversed = tokens.slice().reverse().join(' ');
+  if (reversed && reversed !== normalizedFingerprint && onlineData.has(reversed) && !usedKeys.has(reversed)) {
+    usedKeys.add(reversed);
+    return onlineData.get(reversed);
+  }
 
+  // 3. Fuzzy match with a minimum score threshold. We collect every
+  //    candidate at or above the threshold so that ties can be detected
+  //    and reported as an ambiguous match (returning undefined).
+  const candidates: { key: string; score: number }[] = [];
   for (const key of onlineData.keys()) {
+    if (usedKeys.has(key)) continue;
     const score = scoreNameMatch(fingerprintName, key);
-    if (score > 0 && (!bestMatch || score > bestMatch.score)) {
-      bestMatch = { key, score };
+    if (score >= MIN_FUZZY_MATCH_SCORE) {
+      candidates.push({ key, score });
     }
   }
 
-  if (!bestMatch) return undefined;
-  return onlineData.get(bestMatch.key);
-}
+  if (candidates.length === 0) return undefined;
 
-function buildEmployeeName(employee: { name: string }): string {
-  return employee.name.trim();
+  // Deterministic tie-break: highest score, then alphabetical key.
+  candidates.sort((a, b) => (b.score - a.score) || a.key.localeCompare(b.key));
+  const topScore = candidates[0].score;
+  const tied = candidates.filter((c) => c.score === topScore);
+  if (tied.length > 1) {
+    // Two or more distinct online employees look equally plausible.
+    // Surface the ambiguity rather than silently picking one. The proper
+    // warnings channel lands in Phase 2; for now this goes to console.
+    console.warn(
+      `[attendance] ambiguous online match for "${fingerprintName}": ${tied.length} candidates tied at score ${topScore} (${tied.map((t) => t.key).join(', ')}). Skipping.`
+    );
+    return undefined;
+  }
+
+  const winner = candidates[0];
+  usedKeys.add(winner.key);
+  return onlineData.get(winner.key);
 }
 
 function getMonthFromDates(records: RawFingerprintRecord[], onlineData: Map<string, Map<string, OnlineDayRecord>>): { year: number; month: number } {
@@ -86,7 +127,18 @@ function getMonthFromDates(records: RawFingerprintRecord[], onlineData: Map<stri
 
   const first = candidates[0];
   if (!first) {
-    return { year: 2025, month: 9 };
+    // No recognisable dates in either the fingerprint or the online
+    // input. Pre-fix, the function silently returned the stale literal
+    // { year: 2025, month: 9 } (October 2025 in 0-indexed terms), and
+    // the workbook was built for that month with every cell empty. The
+    // user had no signal that the source files were malformed or empty.
+    // Throwing surfaces the problem through useAttendanceCompiler's
+    // existing try/catch into the red Alert banner.
+    throw new Error(
+      'Could not detect reporting period from uploaded files. '
+      + 'Check that the fingerprint file contains a recognisable date column '
+      + 'and the online file has at least one employee row.'
+    );
   }
 
   return { year: first.getFullYear(), month: first.getMonth() };
@@ -114,13 +166,17 @@ function buildUniqueSheetName(name: string, usedNames: Set<string>): string {
   return candidate;
 }
 
-function pickSourceTime(record: RawFingerprintRecord, field: 'clockIn' | 'clockOut' | 'actualIn' | 'actualOut'): string | null {
+function pickSourceTime(record: RawFingerprintRecord, field: 'actualIn' | 'actualOut'): string | null {
+  // The React parser exposes both `clockIn`/`clockOut` (raw punches)
+  // and `actualIn`/`actualOut` (post-shift time). The compiler
+  // prefers the post-shift value and falls back to the raw punch if
+  // the post-shift field is empty. The 'clockIn' / 'clockOut' field
+  // arguments were dropped in Phase 5.5: nothing in the codebase
+  // calls pickSourceTime with those names, and the function as
+  // previously written only had logic for actualIn/actualOut anyway.
   const primary = record[field];
   if (primary) return primary;
-
-  if (field === 'actualIn') return record.clockIn ?? null;
-  if (field === 'actualOut') return record.clockOut ?? null;
-  return null;
+  return field === 'actualIn' ? record.clockIn ?? null : record.clockOut ?? null;
 }
 
 /**
@@ -133,15 +189,36 @@ export function compileAttendance(
   const employees = getUniqueEmployees(fingerprintRecords);
   const compiledEmployees: CompiledEmployee[] = [];
   const usedSheetNames = new Set<string>();
+  // Tracks online keys already bound to a fingerprint employee in this
+  // compile pass. Defence in depth on top of the no-single-token-alias
+  // rule: even if a fingerprint name scores equally well against two
+  // online employees, only the first match consumes the record map.
+  const usedOnlineKeys = new Set<string>();
   const { year, month } = getMonthFromDates(fingerprintRecords, onlineData);
   const dates = getMonthDates(year, month);
 
+  // Pre-group fingerprint records by normalized employee name. The
+  // previous inner loop walked all m records for each of n employees
+  // and called normalizeName() on every comparison (O(n*m) string
+  // allocations + lower-casing). A single O(m) pass to build this
+  // Map brings the per-employee inner step down to O(records_for_this_emp).
+  const fingerprintByName = new Map<string, RawFingerprintRecord[]>();
+  for (const record of fingerprintRecords) {
+    const key = normalizeName(record.name);
+    if (!key) continue;
+    const bucket = fingerprintByName.get(key);
+    if (bucket) {
+      bucket.push(record);
+    } else {
+      fingerprintByName.set(key, [record]);
+    }
+  }
+
   for (const employee of employees) {
     const fingerprintByDate = new Map<string, { in: string | null; out: string | null }>();
+    const employeeRecords = fingerprintByName.get(normalizeName(employee.name)) ?? [];
 
-    for (const record of fingerprintRecords) {
-      if (normalizeName(record.name) !== normalizeName(employee.name)) continue;
-
+    for (const record of employeeRecords) {
       const dateKey = getFingerprintDateKey(record);
       if (!dateKey) continue;
 
@@ -160,7 +237,7 @@ export function compileAttendance(
       }
     }
 
-    const employeeOnlineData = findOnlineMatch(buildEmployeeName(employee), onlineData);
+    const employeeOnlineData = findOnlineMatch(employee.name.trim(), onlineData, usedOnlineKeys);
 
     const records: MergedAttendanceRecord[] = [];
     for (const date of dates) {

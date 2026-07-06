@@ -2,7 +2,15 @@
 
 import * as XLSX from 'xlsx';
 import type { CompiledEmployee, MergedAttendanceRecord } from './types';
-import { dateToExcelSerial, formatDateFull, getDayName, isFriday, isWeekend, parseTimeToMinutes } from './timeUtils';
+import { dateToExcelSerial, formatDateFull, getDayName, parseTimeToMinutes } from './timeUtils';
+import { isFriday, isWeekend } from './policy';
+import {
+  buildTotalHoursFormula as policyBuildTotalHoursFormula,
+  buildTardinessFormula as policyBuildTardinessFormula,
+  buildLeaveEarlierFormula as policyBuildLeaveEarlierFormula,
+  buildOvertimeFormula as policyBuildOvertimeFormula,
+  reactDayChecks,
+} from './policy';
 
 const COLUMN_WIDTHS = [
   { wch: 10 },
@@ -29,35 +37,47 @@ function toFormulaFraction(value: string | null | undefined): number | null {
   return minutes / (24 * 60);
 }
 
-function buildBreakFormula(row: number): string {
-  const day = `WEEKDAY(A${row},2)`;
-  return `IF(${day}=5,IF(AND(G${row}<TIME(13,0,0),H${row}>TIME(11,30,0)),MIN(H${row},TIME(13,0,0))-MAX(G${row},TIME(11,30,0)),0),IF(${day}<=4,IF(AND(G${row}<TIME(12,30,0),H${row}>TIME(12,0,0)),MIN(H${row},TIME(12,30,0))-MAX(G${row},TIME(12,0,0)),0),0))`;
-}
+// Formula builders. Thin wrappers over the canonical policy builders
+// (shared/policy.js) that pre-supply the React day-of-week checks
+// (WEEKDAY(A${row},2)=5 for Friday, etc.). Pre-Phase 2 each formula
+// was hand-written inline here, with the same Mon-Thu / Friday
+// IF(WEEKDAY(...)=5) and IF(WEEKDAY(...)<=4) branching repeated.
+// Centralising in policy.js means the Cloudflare bundle can produce
+// byte-identical formulas from the same source.
+//
+// (The break formula is composed inside the policy's
+// buildTotalHoursFormula — there is no local wrapper here, the
+// earlier buildBreakFormula wrapper was deleted as dead code in
+// Phase 5.3c since the only caller was buildTotalHoursFormula.)
 
 function buildTotalHoursFormula(row: number): string {
-  return `=IF(OR(G${row}="",H${row}="",WEEKDAY(A${row},2)>5),"",MAX(0,(H${row}-G${row})-(${buildBreakFormula(row)})))`;
+  return policyBuildTotalHoursFormula(row, reactDayChecks(row));
 }
 
 function buildTardinessFormula(row: number): string {
-  return `=IF(OR(G${row}="",WEEKDAY(A${row},2)>5),"",MAX(0,G${row}-TIME(8,30,0)))`;
+  return policyBuildTardinessFormula(row, reactDayChecks(row));
 }
 
 function buildLeaveEarlierFormula(row: number): string {
-  const weekday = `WEEKDAY(A${row},2)`;
-  const standardClockOut = `IF(${weekday}=5,TIME(17,0,0),TIME(16,30,0))`;
-  const flexi1ClockOut = `IF(${weekday}=5,TIME(17,15,0),TIME(16,45,0))`;
-  const flexi2ClockOut = `IF(${weekday}=5,TIME(17,30,0),TIME(17,0,0))`;
-  const expectedClockOut = `IF(G${row}<=TIME(8,0,0),${standardClockOut},IF(G${row}<=TIME(8,15,0),${flexi1ClockOut},${flexi2ClockOut}))`;
-  return `=IF(OR(G${row}="",H${row}="",${weekday}>5),"",MAX(0,${expectedClockOut}-H${row}))`;
+  return policyBuildLeaveEarlierFormula(row, reactDayChecks(row));
 }
 
 function buildOvertimeFormula(row: number): string {
-  return `=IF(OR(H${row}="",WEEKDAY(A${row},2)>5),"",MAX(0,H${row}-IF(WEEKDAY(A${row},2)=5,TIME(18,0,0),TIME(17,30,0))))`;
+  return policyBuildOvertimeFormula(row, reactDayChecks(row));
 }
 
 function makeFormulaCell(formula: string, cachedValue: number | string | null, numberFormat?: string): XLSX.CellObject {
   if (cachedValue === null || cachedValue === undefined || cachedValue === '') {
-    return numberFormat ? { f: formula, z: numberFormat } : { f: formula };
+    // No cached value: emit the formula with `t: 'n'` and the number format
+    // but no `v`. The formula's own evaluation yields '' for rows with no
+    // clock-in/out (the IF guard returns ""), and the absent `v` prevents
+    // SheetJS from pre-populating the cell with a misleading 0. Some
+    // viewers (and the round-trip via XLSX.write) interpret a missing `t`
+    // inconsistently; explicitly setting `t: 'n'` makes the cell type
+    // stable. Pre-fix, the cached value was 0 on no-attendance rows
+    // because toFormulaFraction(null) returned 0, and the workbook
+    // displayed 0:00 in the I/J/K/L columns until the user forced F9.
+    return numberFormat ? { f: formula, z: numberFormat, t: 'n' } : { f: formula, t: 'n' };
   }
 
   return typeof cachedValue === 'number'
@@ -78,7 +98,6 @@ function buildRowMetadata(record: MergedAttendanceRecord): { shift: string; offi
 }
 
 function buildSheetData(
-  employee: CompiledEmployee,
   records: MergedAttendanceRecord[],
   periodLabel: string
 ): XLSX.WorkSheet {
@@ -177,11 +196,11 @@ export function buildAttendanceWorkbook(employees: CompiledEmployee[]): XLSX.Wor
   const lastRecord = firstEmployee.records[firstEmployee.records.length - 1];
   const periodLabel = `${formatDateFull(firstRecord.date)} s/d  ${formatDateFull(lastRecord.date)}`;
 
-  const templateSheet = buildSheetData(firstEmployee, firstEmployee.records, periodLabel);
+  const templateSheet = buildSheetData(firstEmployee.records, periodLabel);
   XLSX.utils.book_append_sheet(workbook, templateSheet, 'Template');
 
   for (const employee of employees) {
-    const sheet = buildSheetData(employee, employee.records, periodLabel);
+    const sheet = buildSheetData(employee.records, periodLabel);
     XLSX.utils.book_append_sheet(workbook, sheet, employee.sheetName);
   }
 

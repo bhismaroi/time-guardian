@@ -149,7 +149,12 @@
   }
 
   function mergeAttendance(fingerprintRows, onlineRows) {
-    const month = detectMonth(fingerprintRows.concat(onlineRows));
+    const months = detectMonths(fingerprintRows.concat(onlineRows));
+    // For display-only consumers (filename, period label, summary), we use
+    // the first month as the "primary" month. If the data spans multiple
+    // months, the workbook still contains every month; only the file
+    // label and sheet header reflect a single month.
+    const month = months[0] || null;
     const fingerprintMap = groupRowsByEmployee(fingerprintRows);
     const onlineMap = groupRowsByEmployee(onlineRows);
     const warnings = [];
@@ -181,7 +186,7 @@
         onlineName,
         fingerprintData,
         onlineData,
-        month,
+        months,
       }));
     }
 
@@ -197,7 +202,7 @@
         onlineName: null,
         fingerprintData,
         onlineData: null,
-        month,
+        months,
       }));
     }
 
@@ -253,40 +258,51 @@
     onlineName,
     fingerprintData,
     onlineData,
-    month,
+    months,
   }) {
     const days = [];
-    const dayCount = new Date(month.year, month.month - 1, 0).getDate();
+    // dayCount = last day of the target month. Passing the (1-based) month as
+    // the 0-based month parameter and day 0 rolls over to the last day of the
+    // intended month. The previous expression `month.month - 1` returned the
+    // *previous* month's day count, silently truncating non-January/non-August
+    // months (e.g. March 2026 -> 28, Feb leap -> 31 overshoot).
+    //
+    // The outer loop iterates every detected month so a fingerprint/online
+    // workbook split across Mar/Apr renders both months' data. Pre-fix this
+    // function took a single `month` and silently dropped the others.
+    for (const month of months) {
+      const dayCount = new Date(month.year, month.month, 0).getDate();
 
-    for (let day = 1; day <= dayCount; day += 1) {
-      const date = new Date(Date.UTC(month.year, month.month - 1, day));
-      const dateKey = formatDateKey(date);
-      const fingerprintDay = fingerprintData && fingerprintData.byDate.get(dateKey);
-      const onlineDay = onlineData && onlineData.byDate.get(dateKey);
-      const sourceInTimes = []
-        .concat((fingerprintDay && fingerprintDay.sourceInTimes) || [])
-        .concat((onlineDay && onlineDay.sourceInTimes) || [])
-        .sort((left, right) => left - right);
-      const fingerprintOut = [].concat((fingerprintDay && fingerprintDay.sourceOutTimes) || []).sort((left, right) => right - left);
-      const onlineOut = [].concat((onlineDay && onlineDay.sourceOutTimes) || []).sort((left, right) => right - left);
-      const sourceOutTimes = fingerprintOut.concat(onlineOut).sort((left, right) => right - left);
-      const mergedIn = sourceInTimes.length ? sourceInTimes[0] : null;
-      const mergedOut = chooseMergedOut(fingerprintOut, onlineOut);
+      for (let day = 1; day <= dayCount; day += 1) {
+        const date = new Date(Date.UTC(month.year, month.month - 1, day));
+        const dateKey = formatDateKey(date);
+        const fingerprintDay = fingerprintData && fingerprintData.byDate.get(dateKey);
+        const onlineDay = onlineData && onlineData.byDate.get(dateKey);
+        const sourceInTimes = []
+          .concat((fingerprintDay && fingerprintDay.sourceInTimes) || [])
+          .concat((onlineDay && onlineDay.sourceInTimes) || [])
+          .sort((left, right) => left - right);
+        const fingerprintOut = [].concat((fingerprintDay && fingerprintDay.sourceOutTimes) || []).sort((left, right) => right - left);
+        const onlineOut = [].concat((onlineDay && onlineDay.sourceOutTimes) || []).sort((left, right) => right - left);
+        const sourceOutTimes = fingerprintOut.concat(onlineOut).sort((left, right) => right - left);
+        const mergedIn = sourceInTimes.length ? sourceInTimes[0] : null;
+        const mergedOut = chooseMergedOut(fingerprintOut, onlineOut);
 
-      days.push({
-        date,
-        dateKey,
-        mergedIn,
-        mergedOut,
-        sourceInTimes,
-        sourceOutTimes,
-        sourceTrace: {
-          fingerprintInCount: fingerprintDay ? fingerprintDay.sourceInTimes.length : 0,
-          fingerprintOutCount: fingerprintDay ? fingerprintDay.sourceOutTimes.length : 0,
-          onlineInCount: onlineDay ? onlineDay.sourceInTimes.length : 0,
-          onlineOutCount: onlineDay ? onlineDay.sourceOutTimes.length : 0,
-        },
-      });
+        days.push({
+          date,
+          dateKey,
+          mergedIn,
+          mergedOut,
+          sourceInTimes,
+          sourceOutTimes,
+          sourceTrace: {
+            fingerprintInCount: fingerprintDay ? fingerprintDay.sourceInTimes.length : 0,
+            fingerprintOutCount: fingerprintDay ? fingerprintDay.sourceOutTimes.length : 0,
+            onlineInCount: onlineDay ? onlineDay.sourceInTimes.length : 0,
+            onlineOutCount: onlineDay ? onlineDay.sourceOutTimes.length : 0,
+          },
+        });
+      }
     }
 
     return {
@@ -404,7 +420,11 @@
     sheet.mergeCells('A6:M6');
 
     sheet.getCell('A1').value = 'Laporan Absensi Harian';
-    sheet.getCell('A2').value = `Periode ${formatDateLabel(makeUtcDate(month.year, month.month, 1))} s/d ${formatDateLabel(makeUtcDate(month.year, month.month, new Date(month.year, month.month - 1, 0).getDate()))}`;
+    // Period label: end-of-month date uses the same corrected day-of-month
+    // idiom (passing the 1-based month as 0-based, day 0 = last day of the
+    // intended month). See dayCount comment above for the bug history.
+    const lastDayOfMonth = new Date(month.year, month.month, 0).getDate();
+    sheet.getCell('A2').value = `Periode ${formatDateLabel(makeUtcDate(month.year, month.month, 1))} s/d ${formatDateLabel(makeUtcDate(month.year, month.month, lastDayOfMonth))}`;
     sheet.getCell('A4').value = 'Date';
     sheet.getCell('B4').value = 'Day';
     sheet.getCell('C4').value = 'Kal';
@@ -512,20 +532,29 @@
     });
   }
 
+  // Formula builders delegate to the canonical AttendancePolicy module
+  // (loaded as policy.js before this script). The day-of-week checks
+  // come from cloudflareDayChecks because the day name lives in column
+  // B (not column A as a WEEKDAY number) in the Cloudflare layout.
+  // Pre-Phase 2 these were hand-written inline; the formulas produced
+  // here are semantically equivalent to the originals but use a
+  // slightly different string shape (explicit OR(...) for the weekend
+  // guard, parenthesised (H-G) for the total hours subtraction, and a
+  // leading '=' which ExcelJS accepts with or without).
   function totalHoursFormula(rowNumber) {
-    return `IF(OR(G${rowNumber}="",H${rowNumber}="",B${rowNumber}="Sat",B${rowNumber}="Sun"),"",MAX(0,H${rowNumber}-G${rowNumber}-IF(B${rowNumber}="Fri",IF(AND(G${rowNumber}<TIME(13,0,0),H${rowNumber}>TIME(11,30,0)),MIN(H${rowNumber},TIME(13,0,0))-MAX(G${rowNumber},TIME(11,30,0)),0),IF(OR(B${rowNumber}="Mon",B${rowNumber}="Tue",B${rowNumber}="Wed",B${rowNumber}="Thu"),IF(AND(G${rowNumber}<TIME(12,30,0),H${rowNumber}>TIME(12,0,0)),MIN(H${rowNumber},TIME(12,30,0))-MAX(G${rowNumber},TIME(12,0,0)),0),0))))`;
+    return AttendancePolicy.buildTotalHoursFormula(rowNumber, AttendancePolicy.cloudflareDayChecks(rowNumber));
   }
 
   function tardinessFormula(rowNumber) {
-    return `IF(OR(G${rowNumber}="",B${rowNumber}="Sat",B${rowNumber}="Sun"),"",MAX(0,G${rowNumber}-TIME(8,30,0)))`;
+    return AttendancePolicy.buildTardinessFormula(rowNumber, AttendancePolicy.cloudflareDayChecks(rowNumber));
   }
 
   function leaveEarlierFormula(rowNumber) {
-    return `IF(OR(G${rowNumber}="",H${rowNumber}="",B${rowNumber}="Sat",B${rowNumber}="Sun"),"",MAX(0,IF(G${rowNumber}<=TIME(8,0,0),IF(B${rowNumber}="Fri",TIME(17,0,0),TIME(16,30,0)),IF(G${rowNumber}<=TIME(8,15,0),IF(B${rowNumber}="Fri",TIME(17,15,0),TIME(16,45,0)),IF(B${rowNumber}="Fri",TIME(17,30,0),TIME(17,0,0))))-H${rowNumber}))`;
+    return AttendancePolicy.buildLeaveEarlierFormula(rowNumber, AttendancePolicy.cloudflareDayChecks(rowNumber));
   }
 
   function overtimeFormula(rowNumber) {
-    return `IF(OR(H${rowNumber}="",B${rowNumber}="Sat",B${rowNumber}="Sun"),"",MAX(0,H${rowNumber}-IF(B${rowNumber}="Fri",TIME(18,0,0),TIME(17,30,0))))`;
+    return AttendancePolicy.buildOvertimeFormula(rowNumber, AttendancePolicy.cloudflareDayChecks(rowNumber));
   }
 
   function remarksForDay(day, isWeekend) {
@@ -543,7 +572,13 @@
     return remarks.join(' + ');
   }
 
-  function detectMonth(rows) {
+  // Returns the sorted set of months seen in the input rows. Each entry
+  // is a 1-based { year, month } pair. The original implementation picked
+  // the single most-frequent month and silently dropped rows for any
+  // other month, so a Mar/Apr split report would render only March with
+  // no indication that April data was lost. Returning the set lets the
+  // caller iterate every month.
+  function detectMonths(rows) {
     const counts = new Map();
 
     rows.forEach((row) => {
@@ -552,13 +587,12 @@
       counts.set(key, (counts.get(key) || 0) + 1);
     });
 
-    const best = Array.from(counts.entries()).sort((left, right) => right[1] - left[1])[0];
-    if (!best) {
-      return null;
-    }
-
-    const parts = best[0].split('-').map(Number);
-    return { year: parts[0], month: parts[1] };
+    return Array.from(counts.entries())
+      .map(([key]) => {
+        const parts = key.split('-').map(Number);
+        return { year: parts[0], month: parts[1] };
+      })
+      .sort((left, right) => (left.year - right.year) || (left.month - right.month));
   }
 
   function parseCellDate(cell) {

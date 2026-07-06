@@ -20,7 +20,15 @@ export default tseslint.config(
     rules: {
       ...reactHooks.configs.recommended.rules,
       "react-refresh/only-export-components": ["warn", { allowConstantExport: true }],
-      "@typescript-eslint/no-unused-vars": "off",
+      // Phase 5.3d: re-enable the lint rule that catches unused
+      // variables/functions. The TS compiler's noUnusedLocals /
+      // noUnusedParameters flags already catch most of the same
+      // issues at compile time (Phase 5.3c). The lint rule is the
+      // JS-level analog and picks up cases the TS compiler doesn't
+      // (e.g. type-only re-exports, function-expression style). Set
+      // to "warn" so it doesn't break the build for the harness
+      // class-field issues deferred in Phase 5.3b.
+      "@typescript-eslint/no-unused-vars": "warn",
     },
   },
 );
