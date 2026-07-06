@@ -1,62 +1,35 @@
 // Business logic for attendance calculations
+//
+// The policy module (shared/policy.js, re-exported via src/lib/policy.ts)
+// is the source of truth for the break window, flexi thresholds, and
+// clock-out rules. We re-import the runtime values here and re-export
+// the policy helpers under their existing names so callers in this
+// codebase (the compiler, tests, etc.) keep working without an
+// import rewrite.
 
 import {
   parseTimeToMinutes,
   minutesToTimeString,
-  isFriday,
-  isWeekend,
   calculateBreakOverlap,
 } from './timeUtils';
 import {
-  BREAK_MON_THU,
-  BREAK_FRI,
-  STANDARD_CLOCKIN_END,
-  FLEXI_1_START,
-  FLEXI_1_END,
-  FLEXI_2_START,
-  FLEXI_2_END,
   LATE_THRESHOLD,
   getBreakWindow,
-  getAllowedClockOut as getAllowedClockOutPolicy,
-  getOvertimeThreshold as getOvertimeThresholdPolicy,
-  determineFlexiType as determineFlexiTypePolicy,
-  isFriday as isFridayPolicy,
-  isWeekend as isWeekendPolicy,
+  getAllowedClockOut,
+  getOvertimeThreshold,
+  determineFlexiType,
+  isWeekend,
 } from './policy';
 import type { AttendanceCalculation, FlexiType } from './types';
 
-// The constants and helpers above live in shared/policy.js. They are
-// re-exported from src/lib/policy.ts with TypeScript types. We re-import
-// the runtime values here so the calculator has a single source of
-// truth for break windows, flexi thresholds, and clock-out rules.
+// Re-export the policy helpers under their existing names.
+export { determineFlexiType, getAllowedClockOut, getOvertimeThreshold };
 
-// The local determineFlexiType below delegates to the policy version.
-// We keep the local name to preserve the existing function signature
-// and JSDoc comment (and so existing tests keep working).
-export function determineFlexiType(clockInMinutes: number): FlexiType {
-  return determineFlexiTypePolicy(clockInMinutes);
-}
-
-/**
- * Get the break duration for a given date
- */
+// getBreakWindow returns the same { start, end, duration } shape the
+// local getBreakDuration used to. Exposed under the old name for
+// backward compat with external callers.
 export function getBreakDuration(date: Date): { start: number; end: number; duration: number } {
-  const win = getBreakWindow(date);
-  return { start: win.start, end: win.end, duration: win.duration };
-}
-
-/**
- * Get the allowed clock-out time based on flexi type and day
- */
-export function getAllowedClockOut(flexiType: FlexiType, date: Date): number {
-  return getAllowedClockOutPolicy(flexiType, date);
-}
-
-/**
- * Get the overtime start threshold for a given date
- */
-export function getOvertimeThreshold(date: Date): number {
-  return getOvertimeThresholdPolicy(date);
+  return getBreakWindow(date);
 }
 
 /**

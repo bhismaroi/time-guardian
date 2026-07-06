@@ -75,42 +75,12 @@ export function minutesToTimeString(minutes: number): string {
 }
 
 /**
- * Convert an Excel time fraction into an HH:MM string.
- */
-export function excelTimeToString(value: number | null | undefined): string | null {
-  if (value === null || value === undefined || !Number.isFinite(value)) {
-    return null;
-  }
-
-  const totalMinutes = Math.round(value * 24 * 60);
-  const hours = Math.floor(totalMinutes / 60);
-  const minutes = totalMinutes % 60;
-  return `${hours.toString().padStart(2, '0')}:${minutes.toString().padStart(2, '0')}`;
-}
-
-/**
  * Convert a Date to an Excel serial date number.
  */
 export function dateToExcelSerial(date: Date): number {
   const utc = Date.UTC(date.getFullYear(), date.getMonth(), date.getDate());
   const excelEpoch = Date.UTC(1899, 11, 30);
   return (utc - excelEpoch) / (24 * 60 * 60 * 1000);
-}
-
-/**
- * Convert HH:MM to an Excel time fraction.
- */
-export function timeStringToExcelFraction(time: string | null | undefined): number | null {
-  const minutes = parseTimeToMinutes(time);
-  if (minutes === null) return null;
-  return minutes / (24 * 60);
-}
-
-/**
- * Get the day of week (0 = Sunday, 1 = Monday, etc.).
- */
-export function getDayOfWeek(date: Date): number {
-  return date.getDay();
 }
 
 /**
@@ -121,19 +91,14 @@ export function getDayName(date: Date): string {
   return days[date.getDay()];
 }
 
-export function getDayNameLong(date: Date): string {
-  const days = ['Sunday', 'Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday'];
-  return days[date.getDay()];
-}
-
-export function isFriday(date: Date): boolean {
-  return date.getDay() === 5;
-}
-
-export function isWeekend(date: Date): boolean {
-  const day = date.getDay();
-  return day === 0 || day === 6;
-}
+// The following helpers were removed in Phase 5.5 because they
+// became dead once shared/policy.js became the canonical source:
+//   - excelTimeToString        (was an unused Excel-formatter)
+//   - timeStringToExcelFraction (was an unused Excel-formatter)
+//   - getDayOfWeek             (was an unused JS Date wrapper)
+//   - getDayNameLong           (was an unused long-form variant)
+//   - isFriday                 (now in shared/policy.js as isFriday)
+//   - isWeekend                (now in shared/policy.js as isWeekend)
 
 /**
  * Calculate break overlap in minutes.

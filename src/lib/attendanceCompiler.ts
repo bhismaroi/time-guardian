@@ -110,10 +110,6 @@ function findOnlineMatch(
   return onlineData.get(winner.key);
 }
 
-function buildEmployeeName(employee: { name: string }): string {
-  return employee.name.trim();
-}
-
 function getMonthFromDates(records: RawFingerprintRecord[], onlineData: Map<string, Map<string, OnlineDayRecord>>): { year: number; month: number } {
   const candidates: Date[] = [];
 
@@ -170,13 +166,17 @@ function buildUniqueSheetName(name: string, usedNames: Set<string>): string {
   return candidate;
 }
 
-function pickSourceTime(record: RawFingerprintRecord, field: 'clockIn' | 'clockOut' | 'actualIn' | 'actualOut'): string | null {
+function pickSourceTime(record: RawFingerprintRecord, field: 'actualIn' | 'actualOut'): string | null {
+  // The React parser exposes both `clockIn`/`clockOut` (raw punches)
+  // and `actualIn`/`actualOut` (post-shift time). The compiler
+  // prefers the post-shift value and falls back to the raw punch if
+  // the post-shift field is empty. The 'clockIn' / 'clockOut' field
+  // arguments were dropped in Phase 5.5: nothing in the codebase
+  // calls pickSourceTime with those names, and the function as
+  // previously written only had logic for actualIn/actualOut anyway.
   const primary = record[field];
   if (primary) return primary;
-
-  if (field === 'actualIn') return record.clockIn ?? null;
-  if (field === 'actualOut') return record.clockOut ?? null;
-  return null;
+  return field === 'actualIn' ? record.clockIn ?? null : record.clockOut ?? null;
 }
 
 /**
@@ -237,7 +237,7 @@ export function compileAttendance(
       }
     }
 
-    const employeeOnlineData = findOnlineMatch(buildEmployeeName(employee), onlineData, usedOnlineKeys);
+    const employeeOnlineData = findOnlineMatch(employee.name.trim(), onlineData, usedOnlineKeys);
 
     const records: MergedAttendanceRecord[] = [];
     for (const date of dates) {
