@@ -43,7 +43,7 @@
 
     return {
       workbook,
-      fileName: `Compiled Attendance ${MONTH_NAMES[merged.month.month - 1]}${merged.month.year}.xlsx`,
+      fileName: `Compiled Attendance ${MONTH_NAMES[merged.month.month - 1]} ${merged.month.year}.xlsx`,
       warnings: merged.warnings,
       summary: {
         employees: merged.employees.length,
