@@ -16,8 +16,15 @@
   ];
 
   async function buildCompiledWorkbookFromFiles(fingerprintFile, onlineFile, { onProgress } = {}) {
+    // The online workbook's period label (e.g. "Aug 1, 2026 - Aug 31,
+    // 2026") is the authoritative month/year. Read it first so the
+    // fingerprint dates can be disambiguated: the fingerprint export
+    // uses day-first dates ("03/11/2025") for some months and
+    // month-first US style ("8/1/2026" = 1 August) for others.
+    if (onProgress) onProgress('Reading online report period...');
+    const reportPeriod = await readOnlineReportPeriod(onlineFile);
     if (onProgress) onProgress('Reading fingerprint file...');
-    const fingerprintRows = await parseFingerprintWorkbook(fingerprintFile);
+    const fingerprintRows = await parseFingerprintWorkbook(fingerprintFile, reportPeriod);
     if (onProgress) onProgress('Reading online file...');
     const onlineRows = await parseOnlineWorkbook(onlineFile);
     if (onProgress) onProgress('Merging attendance records...');
@@ -56,7 +63,22 @@
     };
   }
 
-  async function parseFingerprintWorkbook(file) {
+  async function readOnlineReportPeriod(file) {
+    let workbook;
+    try {
+      workbook = new ExcelJS.Workbook();
+      await workbook.xlsx.load(await file.arrayBuffer());
+    } catch (err) {
+      return null;
+    }
+    const worksheet = workbook.worksheets[0];
+    if (!worksheet) {
+      return null;
+    }
+    return parseOnlineReportPeriod(cellText(worksheet.getCell('A3')));
+  }
+
+  async function parseFingerprintWorkbook(file, reportPeriod) {
     let workbook;
     try {
       workbook = new ExcelJS.Workbook();
@@ -78,7 +100,7 @@
       }
 
       const name = normalizeWhitespace(cellText(row.getCell(4)));
-      const date = parseCellDate(row.getCell(6));
+      const date = parseCellDate(row.getCell(6), reportPeriod);
       const actualIn = parseTimeValue(row.getCell(10).value);
       const actualOut = parseTimeValue(row.getCell(11).value);
 
@@ -595,7 +617,7 @@
       .sort((left, right) => (left.year - right.year) || (left.month - right.month));
   }
 
-  function parseCellDate(cell) {
+  function parseCellDate(cell, reportPeriod) {
     const value = cell.value;
     if (!value) {
       return null;
@@ -611,13 +633,40 @@
     }
 
     if (typeof value === 'object' && value.text) {
-      return parseDateString(value.text);
+      return parseDateString(value.text, reportPeriod);
     }
 
-    return parseDateString(String(value));
+    return parseDateString(String(value), reportPeriod);
   }
 
-  function parseDateString(input) {
+  function resolveAmbiguousDate(a, b, year, reportPeriod) {
+    const dayFirst = makeUtcDate(year, b, a);
+    const monthFirst = makeUtcDate(year, a, b);
+
+    const dayFirstValid = dayFirst.getUTCFullYear() === year && dayFirst.getUTCMonth() + 1 === b;
+    const monthFirstValid = monthFirst.getUTCFullYear() === year && monthFirst.getUTCMonth() + 1 === a;
+
+    if (dayFirstValid && !monthFirstValid) return dayFirst;
+    if (monthFirstValid && !dayFirstValid) return monthFirst;
+
+    if (reportPeriod) {
+      const monthInRange = (month, date) => {
+        const y = date.getUTCFullYear();
+        if (reportPeriod.startMonth === reportPeriod.endMonth) {
+          return month === reportPeriod.startMonth && y === reportPeriod.startYear;
+        }
+        const expectedYear = month >= reportPeriod.startMonth ? reportPeriod.startYear : reportPeriod.endYear;
+        return (month >= reportPeriod.startMonth && month <= 12 && y === expectedYear)
+          || (month < reportPeriod.startMonth && y === expectedYear);
+      };
+      if (dayFirstValid && monthInRange(b, dayFirst)) return dayFirst;
+      if (monthFirstValid && monthInRange(a, monthFirst)) return monthFirst;
+    }
+
+    return dayFirst;
+  }
+
+  function parseDateString(input, reportPeriod) {
     const text = normalizeWhitespace(input);
     if (!text) {
       return null;
@@ -625,7 +674,7 @@
 
     let match = text.match(/^(\d{1,2})\/(\d{1,2})\/(\d{4})$/);
     if (match) {
-      return makeUtcDate(Number(match[3]), Number(match[2]), Number(match[1]));
+      return resolveAmbiguousDate(Number(match[1]), Number(match[2]), Number(match[3]), reportPeriod);
     }
 
     match = text.match(/^(\d{4})-(\d{2})-(\d{2})$/);
@@ -643,30 +692,31 @@
     }
 
     const month = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'].indexOf(label.substring(3, 6)) + 1;
-    if (!month || !reportPeriod || !reportPeriod.year) {
+    if (!month || !reportPeriod || !reportPeriod.startYear) {
       return null;
     }
 
-    let year = reportPeriod.year;
-    if (month < reportPeriod.month) {
-      year += 1;
+    let year = reportPeriod.startYear;
+    if (month < reportPeriod.startMonth) {
+      year = reportPeriod.endYear;
     }
 
     return makeUtcDate(year, month, Number(match[1]));
   }
 
   function parseOnlineReportPeriod(label) {
-    const match = normalizeWhitespace(label).match(/^([A-Za-z]{3})\s+\d{1,2},\s+(\d{4})\s+-\s+[A-Za-z]{3}\s+\d{1,2},\s+\d{4}$/);
+    const match = normalizeWhitespace(label).match(/^([A-Za-z]{3})\s+\d{1,2},\s+(\d{4})\s+-\s+([A-Za-z]{3})\s+\d{1,2},\s+(\d{4})$/);
     if (!match) {
       return null;
     }
 
-    const month = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'].indexOf(match[1]) + 1;
-    if (!month) {
+    const startMonth = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'].indexOf(match[1]) + 1;
+    const endMonth = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'].indexOf(match[3]) + 1;
+    if (!startMonth || !endMonth) {
       return null;
     }
 
-    return { month, year: Number(match[2]) };
+    return { startMonth, startYear: Number(match[2]), endMonth, endYear: Number(match[4]) };
   }
 
   function parseTimeValue(value) {
