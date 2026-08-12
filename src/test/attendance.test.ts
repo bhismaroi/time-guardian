@@ -4,7 +4,7 @@ import * as XLSX from 'xlsx';
 import { calculateAttendance } from '@/lib/attendanceCalculator';
 import { compileAttendance } from '@/lib/attendanceCompiler';
 import { buildAttendanceWorkbook } from '@/lib/excelGenerator';
-import { getMonthDates, parseFingerprintExcel, parseOnlineExcel } from '@/lib/excelParser';
+import { getMonthDates, parseFingerprintExcel, parseOnlineExcel, parseOnlineReportContext } from '@/lib/excelParser';
 import { extractTime, parseTimeToMinutes } from '@/lib/timeUtils';
 import { compileWithCloudflare } from './cloudflare-harness';
 import type { RawFingerprintRecord } from '@/lib/types';
@@ -408,6 +408,119 @@ describe('attendance compilation', () => {
     expect(() => compileAttendance(fingerprintRecords, onlineData)).toThrowError(
       /Could not detect reporting period from uploaded files/
     );
+  });
+
+  it('parses month-first (M/D/YYYY) fingerprint dates against the online report period (React path)', () => {
+    // Regression: the August 2026 fingerprint export carries US-style
+    // "8/1/2026" dates (1 August), but the parser read every
+    // "a/b/yyyy" as day-first, so "8/1/2026" became 8 January and the
+    // compiled workbook was built for January. The online workbook's
+    // report period ("Aug 1, 2026 - Aug 31, 2026") disambiguates it.
+    const fingerprintRows: unknown[][] = [
+      ['Emp No.', 'No. ID', 'NIK', 'Name', 'Auto-Assign', 'Date', 'Working Hours', 'Clock in Time', 'Clock Out Time', 'Actual In', 'Actual Out'],
+      ['37', '1', '', 'Hiraku Sato', '', '8/1/2026', 'Office Hour', '06:00', '23:59', '10:07', '14:46'],
+      ['37', '1', '', 'Hiraku Sato', '', '8/12/2026', 'Office Hour', '06:00', '23:59', '07:49', '16:00'],
+    ];
+    const onlineRows: unknown[][] = [
+      [''],
+      ['Report'],
+      ['Aug 1, 2026 - Aug 31, 2026'],
+      [''],
+      [''],
+      [null, 'Full name', 'Hiraku Sato'],
+      [null, 'Schedule', 'Template', 'Clock-in', 'Clock-out', 'Worked'],
+      ['01 Aug, Sa', 'DO', null, '-', '-', 0],
+      ['12 Aug, We', '08:00 - 16:30', null, '08:00', '17:00', 1],
+    ];
+
+    const fpWb = XLSX.utils.book_new();
+    XLSX.utils.book_append_sheet(fpWb, XLSX.utils.aoa_to_sheet(fingerprintRows), 'Sheet1');
+    const fpBuffer = XLSX.write(fpWb, { bookType: 'xlsx', type: 'array' });
+    const onWb = XLSX.utils.book_new();
+    XLSX.utils.book_append_sheet(onWb, XLSX.utils.aoa_to_sheet(onlineRows), 'Sheet1');
+    const onBuffer = XLSX.write(onWb, { bookType: 'xlsx', type: 'array' });
+
+    const reportContext = parseOnlineReportContext(onBuffer);
+    const fingerprintRecords = parseFingerprintExcel(fpBuffer, reportContext);
+
+    expect(fingerprintRecords).toHaveLength(2);
+    expect(fingerprintRecords[0].dateKey).toBe('2026-08-01');
+    expect(fingerprintRecords[1].dateKey).toBe('2026-08-12');
+  });
+
+  it('keeps day-first (D/M/YYYY) fingerprint dates correct for non-US exports (React path)', () => {
+    // The November 2025 export is day-first ("03/11/2025" = 3
+    // November). With the report period "Nov 1, 2025 - Nov 30, 2025",
+    // the disambiguation must keep reading these as 3 November and not
+    // flip them to 11 March.
+    const fingerprintRows: unknown[][] = [
+      ['Emp No.', 'No. ID', 'NIK', 'Name', 'Auto-Assign', 'Date', 'Working Hours', 'Clock in Time', 'Clock Out Time', 'Actual In', 'Actual Out'],
+      ['37', '1', '', 'Hiraku Sato', '', '03/11/2025', 'Office Hour', '06:00', '23:59', '10:07', '14:46'],
+      ['37', '1', '', 'Hiraku Sato', '', '30/11/2025', 'Office Hour', '06:00', '23:59', '07:49', '16:00'],
+    ];
+    const onlineRows: unknown[][] = [
+      [''],
+      ['Report'],
+      ['Nov 1, 2025 - Nov 30, 2025'],
+      [''],
+      [''],
+      [null, 'Full name', 'Hiraku Sato'],
+      [null, 'Schedule', 'Template', 'Clock-in', 'Clock-out', 'Worked'],
+      ['03 Nov, Mo', '08:00 - 16:30', null, '08:00', '17:00', 1],
+      ['30 Nov, Su', 'DO', null, '-', '-', 0],
+    ];
+
+    const fpWb = XLSX.utils.book_new();
+    XLSX.utils.book_append_sheet(fpWb, XLSX.utils.aoa_to_sheet(fingerprintRows), 'Sheet1');
+    const fpBuffer = XLSX.write(fpWb, { bookType: 'xlsx', type: 'array' });
+    const onWb = XLSX.utils.book_new();
+    XLSX.utils.book_append_sheet(onWb, XLSX.utils.aoa_to_sheet(onlineRows), 'Sheet1');
+    const onBuffer = XLSX.write(onWb, { bookType: 'xlsx', type: 'array' });
+
+    const reportContext = parseOnlineReportContext(onBuffer);
+    const fingerprintRecords = parseFingerprintExcel(fpBuffer, reportContext);
+
+    expect(fingerprintRecords).toHaveLength(2);
+    expect(fingerprintRecords[0].dateKey).toBe('2025-11-03');
+    expect(fingerprintRecords[1].dateKey).toBe('2025-11-30');
+  });
+
+  it('compiles month-first fingerprint data into the August 2026 workbook (Cloudflare path)', async () => {
+    const fingerprintRows: unknown[][] = [
+      [''],
+      ['', '', '', 'Hiraku Sato', '', '8/1/2026', '', '', '', '10:07', '14:46'],
+      ['', '', '', 'Hiraku Sato', '', '8/12/2026', '', '', '', '07:49', '16:00'],
+    ];
+    const fingerprintWorkbook = XLSX.utils.book_new();
+    const fingerprintWorksheet = XLSX.utils.aoa_to_sheet(fingerprintRows);
+    XLSX.utils.book_append_sheet(fingerprintWorkbook, fingerprintWorksheet, 'Sheet1');
+    const fingerprintBuffer = XLSX.write(fingerprintWorkbook, { bookType: 'xlsx', type: 'array' });
+
+    const onlineRows: unknown[][] = [
+      [''],
+      [''],
+      ['Aug 1, 2026 - Aug 31, 2026'],
+      [''],
+      [''],
+      [null, 'Full name', 'Hiraku Sato'],
+      [null, 'Schedule', 'Template', 'Clock-in', 'Clock-out'],
+      ['01 Aug, Sa', 'DO', null, '-', '-', 0],
+      ['12 Aug, We', '08:00 - 16:30', null, '08:00', '17:00'],
+    ];
+    const onlineWorkbook = XLSX.utils.book_new();
+    const onlineWorksheet = XLSX.utils.aoa_to_sheet(onlineRows);
+    XLSX.utils.book_append_sheet(onlineWorkbook, onlineWorksheet, 'Sheet1');
+    const onlineBuffer = XLSX.write(onlineWorkbook, { bookType: 'xlsx', type: 'array' });
+
+    const result = await compileWithCloudflare(fingerprintBuffer, onlineBuffer);
+
+    expect(result).toBeDefined();
+    expect(result.summary.month).toBe('08/2026');
+    expect(result.fileName).toMatch(/Compiled Attendance August 2026\.xlsx$/);
+    const employeeSheet = result.workbook.worksheets.find(
+      (s: { name: string }) => s.name !== 'Template'
+    );
+    expect(employeeSheet?.getCell('A2').value).toMatch(/^Periode 01\/08\/2026 s\/d 31\/08\/2026$/);
   });
 
   it('Cloudflare harness loads the static bundle in jsdom and produces a populated workbook', async () => {

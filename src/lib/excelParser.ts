@@ -23,7 +23,7 @@ type DailyClock = { clockIn: string | null; clockOut: string | null };
  * to resolve which calendar year a given month label belongs to. Months are
  * 0-based (Jan = 0).
  */
-type ReportContext = {
+export type ReportContext = {
   startMonth: number;
   startYear: number;
   endMonth: number;
@@ -93,7 +93,55 @@ function parseDateFromLabel(label: string, context: ReportContext | null): strin
   return formatDateIso(new Date(year, month, day));
 }
 
-function toDateKey(value: unknown): { date: Date; dateKey: string } | null {
+function parseAmbiguousSlashDate(
+  value: string,
+  reportContext: ReportContext | null
+): Date | null {
+  // Ambiguous "a/b/yyyy" notation: the fingerprint export for some months
+  // is day-first ("03/11/2025" = 3 November) and for others is
+  // month-first ("8/1/2026" = 1 August, US style). When the report
+  // period is known from the online workbook (e.g. "Aug 1, 2026 -
+  // Aug 31, 2026"), the interpretation whose month lands inside the
+  // period is the correct one.
+  const match = value.match(/^(\d{1,2})\/(\d{1,2})\/(\d{4})$/);
+  if (!match) return null;
+
+  const a = Number(match[1]);
+  const b = Number(match[2]);
+  const year = Number(match[3]);
+
+  const asDayFirst = new Date(year, b - 1, a); // "a" is the day, "b" is the month
+  const asMonthFirst = new Date(year, a - 1, b); // "a" is the month, "b" is the day
+
+  const valid = (date: Date, month: number): boolean =>
+    date.getFullYear() === year && date.getMonth() === month - 1 && date.getDate() <= 31;
+
+  const dayFirstOk = valid(asDayFirst, b);
+  const monthFirstOk = valid(asMonthFirst, a);
+
+  if (!dayFirstOk && !monthFirstOk) return null;
+  if (dayFirstOk && !monthFirstOk) return asDayFirst;
+  if (monthFirstOk && !dayFirstOk) return asMonthFirst;
+
+  if (reportContext) {
+    const monthInRange = (monthOneBased: number, date: Date): boolean => {
+      const monthZeroBased = monthOneBased - 1;
+      const y = date.getFullYear();
+      if (reportContext.startMonth === reportContext.endMonth) {
+        return monthZeroBased === reportContext.startMonth && y === reportContext.startYear;
+      }
+      const expectedYear = monthZeroBased >= reportContext.startMonth ? reportContext.startYear : reportContext.endYear;
+      return monthZeroBased >= reportContext.startMonth && y === expectedYear
+        || monthZeroBased < reportContext.startMonth && y === expectedYear;
+    };
+    if (monthInRange(b, asDayFirst)) return asDayFirst;
+    if (monthInRange(a, asMonthFirst)) return asMonthFirst;
+  }
+
+  return asDayFirst;
+}
+
+function toDateKey(value: unknown, reportContext: ReportContext | null = null): { date: Date; dateKey: string } | null {
   if (value === null || value === undefined || value === '') return null;
 
   if (typeof value === 'number' && Number.isFinite(value)) {
@@ -106,7 +154,9 @@ function toDateKey(value: unknown): { date: Date; dateKey: string } | null {
   const stringValue = normalizeWhitespace(String(value));
   if (!stringValue) return null;
 
-  const parsed = parseDate(stringValue, new Date().getFullYear());
+  const parsed = /^\d{1,2}\/\d{1,2}\/\d{4}$/.test(stringValue)
+    ? parseAmbiguousSlashDate(stringValue, reportContext)
+    : parseDate(stringValue, new Date().getFullYear());
   if (!parsed) return null;
 
   return { date: parsed, dateKey: formatDateIso(parsed) };
@@ -316,8 +366,18 @@ function parseOnlineBlockFormat(
 
 /**
  * Parse the Fingerprint Excel file.
+ *
+ * The report context (parsed from the online workbook's period label,
+ * e.g. "Aug 1, 2026 - Aug 31, 2026") disambiguates the ambiguous
+ * "a/b/yyyy" date column. The fingerprint export uses day-first dates
+ * for some months and month-first (US style) for others; without the
+ * online period we could not tell "8/1/2026" (1 August) from "8
+ * January".
  */
-export function parseFingerprintExcel(file: ArrayBuffer): RawFingerprintRecord[] {
+export function parseFingerprintExcel(
+  file: ArrayBuffer,
+  reportContext: ReportContext | null = null
+): RawFingerprintRecord[] {
   const workbook = XLSX.read(file, { type: 'array' });
   const sheetName = workbook.SheetNames[0];
   const worksheet = workbook.Sheets[sheetName];
@@ -371,7 +431,7 @@ export function parseFingerprintExcel(file: ArrayBuffer): RawFingerprintRecord[]
 
     if (!name || !dateValue) continue;
 
-    const parsedDate = toDateKey(dateValue);
+    const parsedDate = toDateKey(dateValue, reportContext);
     if (!parsedDate) continue;
 
     // The header-row column detection (columnIndex.clockIn /
@@ -409,6 +469,19 @@ export function parseFingerprintExcel(file: ArrayBuffer): RawFingerprintRecord[]
   }
 
   return records;
+}
+
+/**
+ * Extract the reporting period from an online workbook buffer. Returns
+ * null when no period label can be found in the first few rows.
+ */
+export function parseOnlineReportContext(file: ArrayBuffer): ReportContext | null {
+  const workbook = XLSX.read(file, { type: 'array' });
+  const sheetName = workbook.SheetNames[0];
+  const worksheet = workbook.Sheets[sheetName];
+  const data = XLSX.utils.sheet_to_json<unknown[]>(worksheet, { header: 1 }) as unknown[][];
+  if (data.length === 0) return null;
+  return parseReportContext(data);
 }
 
 /**

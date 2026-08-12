@@ -264,6 +264,12 @@ export async function compileWithCloudflare(
   options: { debug?: boolean } = {}
 ) {
   const AC = loadCloudflareBundle();
+  // The bundle now reads the online workbook once up-front to extract
+  // the report period (which disambiguates fingerprint dates), then
+  // reads the fingerprint workbook, then the online workbook again.
+  // Enqueue buffers in the same order: online, fingerprint, online.
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  (window as any).__enqueueWorkbookBuffer(onlineBuffer);
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   (window as any).__enqueueWorkbookBuffer(fingerprintBuffer);
   // eslint-disable-next-line @typescript-eslint/no-explicit-any

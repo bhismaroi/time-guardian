@@ -1,6 +1,6 @@
 import { useState, useCallback } from 'react';
 import type { CompiledEmployee } from '@/lib/types';
-import { parseFingerprintExcel, parseOnlineExcel } from '@/lib/excelParser';
+import { parseFingerprintExcel, parseOnlineExcel, parseOnlineReportContext } from '@/lib/excelParser';
 import { compileAttendance } from '@/lib/attendanceCompiler';
 import { generateAttendanceExcel, downloadExcel } from '@/lib/excelGenerator';
 
@@ -59,8 +59,13 @@ export function useAttendanceCompiler() {
       assertXlsxBuffer(fingerprintBuffer, 'Fingerprint file');
       assertXlsxBuffer(onlineBuffer, 'Online file');
 
-      // Parse files
-      const fingerprintRecords = parseFingerprintExcel(fingerprintBuffer);
+      // Parse files. The online workbook's period label (e.g. "Aug 1,
+      // 2026 - Aug 31, 2026") is the authoritative month/year for the
+      // report. It also disambiguates the fingerprint date column, which
+      // can be either day-first ("03/11/2025") or month-first US style
+      // ("8/1/2026" = 1 August) depending on the export.
+      const reportContext = parseOnlineReportContext(onlineBuffer);
+      const fingerprintRecords = parseFingerprintExcel(fingerprintBuffer, reportContext);
       const onlineData = parseOnlineExcel(onlineBuffer);
 
       // Compile attendance
