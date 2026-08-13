@@ -336,6 +336,49 @@ describe('attendance compilation', () => {
     expect(saputraDay?.onlineIn).toBeNull();
   });
 
+  it('does not attribute online data across employees sharing only a first name (Cloudflare path)', async () => {
+    // Regression for the Cloudflare bundle, which previously accepted
+    // ANY shared token as a name match (score > 0). An online employee
+    // whose name shares only the first token with a fingerprint employee
+    // (e.g. "Adi Pratama" vs "Adi Wijaya") had its clock-ins merged into
+    // the wrong person's sheet. The fix requires first AND last name
+    // (score >= 80) and rejects single-token matches.
+    const fingerprintRows: unknown[][] = [
+      [''],
+      ['', '', '', 'Adi Wijaya', '', '2026-03-03', '', '', '', '08:00', '17:00'],
+      ['', '', '', 'Adi Saputra', '', '2026-03-03', '', '', '', '08:00', '17:00'],
+    ];
+    const fingerprintWorkbook = XLSX.utils.book_new();
+    const fingerprintWorksheet = XLSX.utils.aoa_to_sheet(fingerprintRows);
+    XLSX.utils.book_append_sheet(fingerprintWorkbook, fingerprintWorksheet, 'Sheet1');
+    const fingerprintBuffer = XLSX.write(fingerprintWorkbook, { bookType: 'xlsx', type: 'array' });
+
+    const onlineRows: unknown[][] = [
+      [''],
+      [''],
+      ['Mar 1, 2026 - Mar 31, 2026'],
+      [''],
+      [''],
+      [null, 'Full name', 'Adi Pratama'],
+      [null, 'Schedule', 'Template', 'Clock-in', 'Clock-out'],
+      ['03 Mar, Tu', '08:00 - 16:30', null, '07:30', '18:10'],
+    ];
+    const onlineWorkbook = XLSX.utils.book_new();
+    const onlineWorksheet = XLSX.utils.aoa_to_sheet(onlineRows);
+    XLSX.utils.book_append_sheet(onlineWorkbook, onlineWorksheet, 'Sheet1');
+    const onlineBuffer = XLSX.write(onlineWorkbook, { bookType: 'xlsx', type: 'array' });
+
+    const result = await compileWithCloudflare(fingerprintBuffer, onlineBuffer);
+
+    // "Adi Pratama" shares only the first name with "Adi Wijaya" and
+    // "Adi Saputra", so it must NOT match either of them. It stays an
+    // online-only employee instead of having its 07:30 clock-in merged
+    // into one of the two fingerprint sheets.
+    expect(result.summary.matchedEmployees).toBe(0);
+    expect(result.summary.onlineOnlyEmployees).toBe(1);
+    expect(result.warnings.some((w: string) => w.includes('No fingerprint match found for online employee "Adi Pratama"'))).toBe(true);
+  });
+
   it('omits the cached value on no-attendance formula cells so the formula result is shown', () => {
     // Regression: when a row had no actualIn/actualOut (e.g. a weekend
     // day, or a missed punch), the workbook used to ship a cached value

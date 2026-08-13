@@ -148,7 +148,7 @@
       }
 
       const dateLabel = normalizeWhitespace(cellText(row.getCell(1)));
-      if (!currentName || !dateLabel || !/^\d{2}\s+\w{3},/.test(dateLabel)) {
+      if (!currentName || !dateLabel || !/^\d{1,2}\s+[A-Za-z]{3,9},/.test(dateLabel)) {
         return;
       }
 
@@ -185,7 +185,7 @@
     const lowConfidenceMatches = [];
 
     for (const [onlineName, onlineData] of onlineMap.entries()) {
-      const match = findBestFingerprintMatch(onlineData.tokens, fingerprintMap, usedFingerprintNames);
+      const match = findBestFingerprintMatch(onlineData.tokens, fingerprintMap, usedFingerprintNames, warnings);
       let fingerprintName = null;
 
       if (match) {
@@ -352,8 +352,15 @@
     return Math.max(bestFingerprint, bestOnline);
   }
 
-  function findBestFingerprintMatch(onlineTokens, fingerprintMap, usedFingerprintNames) {
-    let bestMatch = null;
+  // Minimum score (0-100) for a fuzzy name match. First-name and
+  // last-name matches each score 40; a candidate must match BOTH (80)
+  // to be accepted. A single shared first or last name (40) is not
+  // enough — that is the failure mode that attributed "Adi Saputra"'s
+  // online data to "Adi Wijaya" (both share the first name "adi").
+  const MIN_FUZZY_MATCH_SCORE = 80;
+
+  function findBestFingerprintMatch(onlineTokens, fingerprintMap, usedFingerprintNames, warnings) {
+    const candidates = [];
 
     for (const [candidateName, candidate] of fingerprintMap.entries()) {
       if (usedFingerprintNames.has(candidateName)) {
@@ -361,20 +368,38 @@
       }
 
       const score = scoreNameMatch(onlineTokens, candidate.tokens);
-      if (score <= 0) {
+      if (score < MIN_FUZZY_MATCH_SCORE) {
         continue;
       }
 
-      if (!bestMatch || score > bestMatch.score || (score === bestMatch.score && candidateName < bestMatch.name)) {
-        bestMatch = {
-          name: candidateName,
-          score,
-          lowConfidence: score < 5,
-        };
-      }
+      candidates.push({ name: candidateName, score });
     }
 
-    return bestMatch;
+    if (candidates.length === 0) {
+      return null;
+    }
+
+    // Deterministic tie-break: highest score, then alphabetical name.
+    candidates.sort((left, right) => (right.score - left.score) || left.name.localeCompare(right.name));
+    const topScore = candidates[0].score;
+    const tied = candidates.filter((candidate) => candidate.score === topScore);
+
+    if (tied.length > 1) {
+      // Two or more fingerprint employees look equally plausible.
+      // Surface the ambiguity rather than silently picking one, so the
+      // user can see that data was not attributed to the wrong person.
+      warnings.push(
+        `Ambiguous fingerprint match for online employee "${onlineTokens.join(' ')}": ${tied.length} candidates tied at score ${topScore} (${tied.map((t) => t.name).join(', ')}).`
+      );
+      return null;
+    }
+
+    const winner = candidates[0];
+    return {
+      name: winner.name,
+      score: winner.score,
+      lowConfidence: winner.score < 100,
+    };
   }
 
   function scoreNameMatch(onlineTokens, fingerprintTokens) {
@@ -382,25 +407,28 @@
       return 0;
     }
 
-    const onlineSet = new Set(onlineTokens);
-    const fingerprintSet = new Set(fingerprintTokens);
-    const intersection = Array.from(onlineSet).filter((token) => fingerprintSet.has(token));
+    const onlineKey = onlineTokens.join(' ');
+    const fingerprintKey = fingerprintTokens.join(' ');
 
-    if (!intersection.length) {
-      return 0;
+    // Exact full-name match.
+    if (onlineKey === fingerprintKey) {
+      return 100;
     }
 
-    let score = intersection.length * 3;
-
-    if (onlineTokens[0] && fingerprintTokens[0] && onlineTokens[0] === fingerprintTokens[0]) {
-      score += 2;
+    // Reversed full-name match ("Adi Wijaya" vs "Wijaya Adi").
+    if (onlineKey === fingerprintTokens.slice().reverse().join(' ')) {
+      return 100;
     }
-    if (
-      onlineTokens[onlineTokens.length - 1] &&
-      fingerprintTokens[fingerprintTokens.length - 1] &&
-      onlineTokens[onlineTokens.length - 1] === fingerprintTokens[fingerprintTokens.length - 1]
-    ) {
-      score += 2;
+
+    // Fuzzy: first-name and last-name overlap, each worth 40. We
+    // deliberately do NOT count shared middle tokens or single-token
+    // names, which were the source of false-positive matches.
+    let score = 0;
+    if (onlineTokens[0] === fingerprintTokens[0]) {
+      score += 40;
+    }
+    if (onlineTokens[onlineTokens.length - 1] === fingerprintTokens[fingerprintTokens.length - 1]) {
+      score += 40;
     }
 
     return score;
@@ -685,13 +713,20 @@
     return null;
   }
 
+  // Map a month label (3-letter abbreviation or full name) to a 1-based
+  // month number. Returns 0 for an unrecognised label.
+  function monthNumber(label) {
+    const abbr = normalizeWhitespace(label).slice(0, 3).toLowerCase();
+    return ['jan', 'feb', 'mar', 'apr', 'may', 'jun', 'jul', 'aug', 'sep', 'oct', 'nov', 'dec'].indexOf(abbr) + 1;
+  }
+
   function parseOnlineDateLabel(label, reportPeriod) {
-    const match = label.match(/^(\d{2})\s+([A-Za-z]{3}),\s*(?:[A-Za-z]{2})$/);
+    const match = label.match(/^(\d{1,2})\s+([A-Za-z]{3,9}),\s*(?:[A-Za-z]{2})$/);
     if (!match) {
       return null;
     }
 
-    const month = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'].indexOf(label.substring(3, 6)) + 1;
+    const month = monthNumber(match[2]);
     if (!month || !reportPeriod || !reportPeriod.startYear) {
       return null;
     }
@@ -705,13 +740,13 @@
   }
 
   function parseOnlineReportPeriod(label) {
-    const match = normalizeWhitespace(label).match(/^([A-Za-z]{3})\s+\d{1,2},\s+(\d{4})\s+-\s+([A-Za-z]{3})\s+\d{1,2},\s+(\d{4})$/);
+    const match = normalizeWhitespace(label).match(/^([A-Za-z]{3,9})\s+\d{1,2},\s+(\d{4})\s+-\s+([A-Za-z]{3,9})\s+\d{1,2},\s+(\d{4})$/);
     if (!match) {
       return null;
     }
 
-    const startMonth = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'].indexOf(match[1]) + 1;
-    const endMonth = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'].indexOf(match[3]) + 1;
+    const startMonth = monthNumber(match[1]);
+    const endMonth = monthNumber(match[3]);
     if (!startMonth || !endMonth) {
       return null;
     }
