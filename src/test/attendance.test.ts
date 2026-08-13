@@ -379,6 +379,47 @@ describe('attendance compilation', () => {
     expect(result.warnings.some((w: string) => w.includes('No fingerprint match found for online employee "Adi Pratama"'))).toBe(true);
   });
 
+  it('matches a lone first name to a full name when unambiguous (Cloudflare path)', async () => {
+    // Regression: employees whose fingerprint export is a lone first name
+    // (e.g. "Patricia") but whose online export is the full name ("Patricia
+    // Pranata") could not be matched by the strict first+last rule. The
+    // fallback pairs them only when that first name is unique across the
+    // fingerprint file (exactly one candidate), so the online clock data
+    // still merges into the right person's sheet.
+    const fingerprintRows: unknown[][] = [
+      [''],
+      ['', '', '', 'Patricia', '', '2026-03-03', '', '', '', '08:00', '17:00'],
+    ];
+    const fingerprintWorkbook = XLSX.utils.book_new();
+    const fingerprintWorksheet = XLSX.utils.aoa_to_sheet(fingerprintRows);
+    XLSX.utils.book_append_sheet(fingerprintWorkbook, fingerprintWorksheet, 'Sheet1');
+    const fingerprintBuffer = XLSX.write(fingerprintWorkbook, { bookType: 'xlsx', type: 'array' });
+
+    const onlineRows: unknown[][] = [
+      [''],
+      [''],
+      ['Mar 1, 2026 - Mar 31, 2026'],
+      [''],
+      [''],
+      [null, 'Full name', 'Patricia Pranata'],
+      [null, 'Schedule', 'Template', 'Clock-in', 'Clock-out'],
+      ['03 Mar, Tu', '08:00 - 16:30', null, '07:30', '18:10'],
+    ];
+    const onlineWorkbook = XLSX.utils.book_new();
+    const onlineWorksheet = XLSX.utils.aoa_to_sheet(onlineRows);
+    XLSX.utils.book_append_sheet(onlineWorkbook, onlineWorksheet, 'Sheet1');
+    const onlineBuffer = XLSX.write(onlineWorkbook, { bookType: 'xlsx', type: 'array' });
+
+    const result = await compileWithCloudflare(fingerprintBuffer, onlineBuffer);
+
+    // "Patricia" (single) must pair with "Patricia Pranata" (full), since
+    // it is the only fingerprint candidate sharing that first name. The
+    // match is flagged low-confidence but still merges the online data.
+    expect(result.summary.matchedEmployees).toBe(1);
+    expect(result.summary.onlineOnlyEmployees).toBe(0);
+    expect(result.summary.lowConfidenceMatches).toBe(1);
+  });
+
   it('omits the cached value on no-attendance formula cells so the formula result is shown', () => {
     // Regression: when a row had no actualIn/actualOut (e.g. a weekend
     // day, or a missed punch), the workbook used to ship a cached value

@@ -375,31 +375,61 @@
       candidates.push({ name: candidateName, score });
     }
 
-    if (candidates.length === 0) {
+    if (candidates.length > 0) {
+      // Deterministic tie-break: highest score, then alphabetical name.
+      candidates.sort((left, right) => (right.score - left.score) || left.name.localeCompare(right.name));
+      const topScore = candidates[0].score;
+      const tied = candidates.filter((candidate) => candidate.score === topScore);
+
+      if (tied.length > 1) {
+        // Two or more fingerprint employees look equally plausible.
+        // Surface the ambiguity rather than silently picking one, so the
+        // user can see that data was not attributed to the wrong person.
+        warnings.push(
+          `Ambiguous fingerprint match for online employee "${onlineTokens.join(' ')}": ${tied.length} candidates tied at score ${topScore} (${tied.map((t) => t.name).join(', ')}).`
+        );
+        return null;
+      }
+
+      const winner = candidates[0];
+      return {
+        name: winner.name,
+        score: winner.score,
+        lowConfidence: winner.score < 100,
+      };
+    }
+
+    // Single-token fallback. Some employees are exported as a lone first
+    // name in one system but a full name in the other (e.g. fingerprint
+    // "Patricia" vs online "Patricia Pranata"). A strict first+last match
+    // cannot pair those. We accept a first-name-only match only when it is
+    // unambiguous — exactly one fingerprint candidate shares that first
+    // name — AND one of the two names is a single token. The single-token
+    // guard keeps "Adi Wijaya" vs "Adi Saputra" (both multi-token, both
+    // sharing "adi") from being mispaired, while recovering the
+    // legitimate lone-first-name cases.
+    const firstToken = onlineTokens[0];
+    const firstTokenCandidates = [];
+
+    for (const [candidateName, candidate] of fingerprintMap.entries()) {
+      if (usedFingerprintNames.has(candidateName)) {
+        continue;
+      }
+      if (candidate.tokens[0] === firstToken) {
+        firstTokenCandidates.push({ name: candidateName, tokens: candidate.tokens });
+      }
+    }
+
+    if (firstTokenCandidates.length !== 1) {
       return null;
     }
 
-    // Deterministic tie-break: highest score, then alphabetical name.
-    candidates.sort((left, right) => (right.score - left.score) || left.name.localeCompare(right.name));
-    const topScore = candidates[0].score;
-    const tied = candidates.filter((candidate) => candidate.score === topScore);
-
-    if (tied.length > 1) {
-      // Two or more fingerprint employees look equally plausible.
-      // Surface the ambiguity rather than silently picking one, so the
-      // user can see that data was not attributed to the wrong person.
-      warnings.push(
-        `Ambiguous fingerprint match for online employee "${onlineTokens.join(' ')}": ${tied.length} candidates tied at score ${topScore} (${tied.map((t) => t.name).join(', ')}).`
-      );
+    const onlyCandidate = firstTokenCandidates[0];
+    if (onlyCandidate.tokens.length !== 1 && onlineTokens.length !== 1) {
       return null;
     }
 
-    const winner = candidates[0];
-    return {
-      name: winner.name,
-      score: winner.score,
-      lowConfidence: winner.score < 100,
-    };
+    return { name: onlyCandidate.name, score: 40, lowConfidence: true };
   }
 
   function scoreNameMatch(onlineTokens, fingerprintTokens) {
