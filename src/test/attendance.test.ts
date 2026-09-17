@@ -128,6 +128,38 @@ describe('attendance calculations', () => {
     expect(formatDateIso(parseDate('8/1/2026', 2025, 'month-first') as Date)).toBe('2026-08-01');
   });
 
+  it('parses dates for every later month and year, including 2050', () => {
+    // The export suffixes the year with two digits, so the parser has to
+    // keep working as the calendar advances. These are the months HR will
+    // upload next.
+    const laterMonths: Array<[string, string]> = [
+      ['01-Oct-26', '2026-10-01'],
+      ['30-Nov-26', '2026-11-30'],
+      ['25-Dec-26', '2026-12-25'],
+      ['02-Jan-27', '2027-01-02'],   // cross-year upload
+      ['01-Feb-28', '2028-02-01'],   // leap year
+      ['29-Feb-28', '2028-02-29'],   // leap day itself
+      ['01-Mar-29', '2029-03-01'],
+      ['01-Sep-50', '2050-09-01'],   // two-digit year 50
+      ['31-Dec-69', '2069-12-31'],   // last year the two-digit window covers
+    ];
+
+    for (const [input, expected] of laterMonths) {
+      const parsed = parseDate(input);
+      expect(parsed, `parseDate(${JSON.stringify(input)}) returned null`).not.toBeNull();
+      expect(formatDateIso(parsed as Date)).toBe(expected);
+    }
+
+    // Four-digit years pass through untouched, so a future export that
+    // switches to "01-Oct-2050" also works.
+    expect(formatDateIso(parseDate('01-Oct-2050') as Date)).toBe('2050-10-01');
+    expect(formatDateIso(parseDate('2050-10-01') as Date)).toBe('2050-10-01');
+
+    // Month lengths stay correct in a far-future year.
+    expect(getMonthDates(2050, 1).length).toBe(28); // Feb 2050
+    expect(getMonthDates(2050, 10).length).toBe(30); // Nov 2050
+  });
+
   it('getMonthDates returns the right number of days for each month and is DST-safe', () => {
     // The previous implementation walked the days by mutating a loop
     // variable (date.setDate(date.getDate() + 1)) — a DST transition
@@ -444,6 +476,71 @@ describe('attendance compilation', () => {
     await expect(compileWithCloudflare(fingerprintBuffer, onlineBuffer)).rejects.toThrow(
       /none could be read/
     );
+  });
+
+  it('compiles a later month end to end (October 2026)', async () => {
+    // Guards against month-specific assumptions: the same pipeline has to
+    // work for every month HR uploads, not just the one being debugged.
+    const fingerprintBuffer = workbookBufferFromRows([
+      FINGERPRINT_EXPORT_HEADER,
+      fingerprintExportRow('01-Oct-26', '08:00', '16:30'),
+      fingerprintExportRow('02-Oct-26', '08:05', '17:10'),
+      fingerprintExportRow('30-Oct-26', '07:50', '16:45'),
+    ]);
+    const onlineBuffer = workbookBufferFromRows([
+      [''],
+      [''],
+      ['Oct 1, 2026 - Oct 31, 2026'],
+      [''],
+      [''],
+      [null, 'Full name', 'Hiraku Sato'],
+      [null, 'Schedule', 'Template', 'Clock-in', 'Clock-out'],
+      ['02 Oct, Fr', '08:00 - 17:00', null, '08:15', '18:00'],
+    ]);
+
+    const result = await compileWithCloudflare(fingerprintBuffer, onlineBuffer);
+    expect(result.fileName).toBe('Compiled Attendance October 2026.xlsx');
+
+    const sheet = result.workbook.worksheets.find(
+      (candidate: { name: string }) => candidate.name === 'Hiraku Sato'
+    );
+    // Day N of the month is written to row 6 + N.
+    expect(sheet!.getCell('G7').value).toBeCloseTo((8 * 60) / 1440, 6);          // 1 Oct, fingerprint only
+    expect(sheet!.getCell('G8').value).toBeCloseTo((8 * 60 + 5) / 1440, 6);      // 2 Oct, earliest of 08:05/08:15
+    expect(sheet!.getCell('H8').value).toBeCloseTo((18 * 60) / 1440, 6);         // 2 Oct, latest of 17:10/18:00
+    expect(sheet!.getCell('G36').value).toBeCloseTo((7 * 60 + 50) / 1440, 6);    // 30 Oct
+  });
+
+  it('compiles a far-future month end to end (September 2050)', async () => {
+    // The two-digit year in the export is the long-term risk. This proves a
+    // 2050 upload produces a correctly labelled, correctly dated workbook.
+    const fingerprintBuffer = workbookBufferFromRows([
+      FINGERPRINT_EXPORT_HEADER,
+      fingerprintExportRow('01-Sep-50', '08:10', '16:40'),
+    ]);
+    const onlineBuffer = workbookBufferFromRows([
+      [''],
+      [''],
+      ['Sep 1, 2050 - Sep 30, 2050'],
+      [''],
+      [''],
+      [null, 'Full name', 'Hiraku Sato'],
+      [null, 'Schedule', 'Template', 'Clock-in', 'Clock-out'],
+      ['01 Sep, Th', '08:00 - 16:30', null, '08:00', '17:20'],
+    ]);
+
+    const result = await compileWithCloudflare(fingerprintBuffer, onlineBuffer);
+
+    expect(result.fileName).toBe('Compiled Attendance September 2050.xlsx');
+    expect(result.summary.month).toBe('09/2050');
+
+    const sheet = result.workbook.worksheets.find(
+      (candidate: { name: string }) => candidate.name === 'Hiraku Sato'
+    );
+    // Earliest clock-in of 08:10 (fingerprint) and 08:00 (online) wins.
+    expect(sheet!.getCell('G7').value).toBeCloseTo((8 * 60) / 1440, 6);
+    // Latest clock-out of 16:40 and 17:20 wins.
+    expect(sheet!.getCell('H7').value).toBeCloseTo((17 * 60 + 20) / 1440, 6);
   });
 
   it('reads the policy-priority clock-in column even when it has the lower column index', () => {
