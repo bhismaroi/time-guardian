@@ -376,10 +376,23 @@ export function parseFingerprintExcel(file: ArrayBuffer): RawFingerprintRecord[]
   );
 
   const records: RawFingerprintRecord[] = [];
+  // Guards against silent data loss. If the export ever changes its column
+  // layout or date format, every row is skipped and the caller happily
+  // builds a workbook with no fingerprint data — the failure mode that
+  // produced an online-only report with no Actual In/Out. Counting the
+  // rows we saw and the dates we could not read lets us fail loudly
+  // instead.
+  let dataRowCount = 0;
+  const unparsedDateSamples: string[] = [];
 
   for (let rowIndex = 1; rowIndex < data.length; rowIndex++) {
     const row = data[rowIndex];
     if (!row) continue;
+
+    const hasContent = row.some(
+      (cell) => cell !== null && cell !== undefined && String(cell).trim() !== ''
+    );
+    if (hasContent) dataRowCount += 1;
 
     const empNo = String(row[columnIndex.empNo] ?? '').trim();
     const name = String(row[columnIndex.name] ?? '').trim();
@@ -389,7 +402,10 @@ export function parseFingerprintExcel(file: ArrayBuffer): RawFingerprintRecord[]
     if (!name || !dateValue) continue;
 
     const parsedDate = toDateKey(dateValue, numericDateOrder);
-    if (!parsedDate) continue;
+    if (!parsedDate) {
+      if (unparsedDateSamples.length < 3) unparsedDateSamples.push(String(dateValue).trim());
+      continue;
+    }
 
     // The header-row column detection (columnIndex.clockIn /
     // clockOut) is authoritative — it picked the policy-preferred
@@ -423,6 +439,20 @@ export function parseFingerprintExcel(file: ArrayBuffer): RawFingerprintRecord[]
       actualIn,
       actualOut,
     });
+  }
+
+  if (records.length === 0 && dataRowCount > 0) {
+    const nameColumn = `column ${columnIndex.name + 1} ("${String(data[0]?.[columnIndex.name] ?? '')}")`;
+    const dateColumn = `column ${columnIndex.date + 1} ("${String(data[0]?.[columnIndex.date] ?? '')}")`;
+    const samples = unparsedDateSamples.length
+      ? ` The dates found there (${unparsedDateSamples.map((value) => `"${value}"`).join(', ')}) could not be interpreted.`
+      : '';
+    throw new Error(
+      `Fingerprint file has ${dataRowCount} data row(s) but none could be read, so the report would `
+      + `contain no fingerprint data. Expected the employee name in ${nameColumn} and the date in ${dateColumn}.`
+      + samples
+      + ' Check that the export still uses the same layout and date format.'
+    );
   }
 
   return records;

@@ -173,6 +173,10 @@ function loadCloudflareBundle() {
   (window as any).__enqueueWorkbookBuffer = (buf: ArrayBuffer) => {
     bufferQueue.push(buf);
   };
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  (window as any).__resetWorkbookBuffers = () => {
+    bufferQueue.length = 0;
+  };
   const TrackedWorkbook = function TrackedWorkbook() {
     const buf = bufferQueue.shift();
     return buf ? StubWorkbook.fromXlsxBuffer(buf) : new StubWorkbook();
@@ -225,10 +229,12 @@ function makeFileLike(buffer, name) {
  */
 export async function compileWithCloudflare(fingerprintBuffer, onlineBuffer, options: { debug?: boolean } = {}) {
   const AC = loadCloudflareBundle();
-  // The bundle now reads the online workbook once up-front to extract
-  // the report period (which disambiguates fingerprint dates), then
-  // reads the fingerprint workbook, then the online workbook again.
-  // Enqueue buffers in the same order: online, fingerprint, online.
+  // The stub's workbook constructor pulls from module-level queue state.
+  // A run that throws partway through (for example when a parse guard
+  // rejects the file) leaves unconsumed buffers behind and desyncs every
+  // later call in this file, so start each run from a clean queue.
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  (window as any).__resetWorkbookBuffers();
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   (window as any).__enqueueWorkbookBuffer(onlineBuffer);
   // eslint-disable-next-line @typescript-eslint/no-explicit-any

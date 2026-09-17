@@ -93,18 +93,33 @@
     }
 
     const rows = [];
+    // Guards against silent data loss: if the export changes its column
+    // layout or date format, every row is skipped and the workbook is
+    // built from the online source alone, with no Actual In/Actual Out at
+    // all. Counting the rows we saw and the dates we could not read lets
+    // us fail loudly instead of shipping a plausible-looking empty report.
+    let dataRowCount = 0;
+    const unparsedDateSamples = [];
 
     worksheet.eachRow((row, rowNumber) => {
       if (rowNumber === 1) {
         return;
       }
 
+      if (rowHasContent(row)) {
+        dataRowCount += 1;
+      }
+
       const name = normalizeWhitespace(cellText(row.getCell(4)));
+      const rawDate = normalizeWhitespace(cellText(row.getCell(6)));
       const date = parseCellDate(row.getCell(6), reportPeriod);
       const actualIn = parseTimeValue(row.getCell(10).value);
       const actualOut = parseTimeValue(row.getCell(11).value);
 
       if (!name || !date || looksLikeGarbageName(name)) {
+        if (name && rawDate && !date && unparsedDateSamples.length < 3) {
+          unparsedDateSamples.push(rawDate);
+        }
         return;
       }
 
@@ -117,6 +132,18 @@
         actualOut,
       });
     });
+
+    if (rows.length === 0 && dataRowCount > 0) {
+      const samples = unparsedDateSamples.length
+        ? ` The dates found there (${unparsedDateSamples.map((value) => `"${value}"`).join(', ')}) could not be interpreted.`
+        : '';
+      throw new Error(
+        `Fingerprint file has ${dataRowCount} data row(s) but none could be read, so the report would `
+        + 'contain no fingerprint data. Expected the employee name in column 4 and the date in column 6.'
+        + samples
+        + ' Check that the export still uses the same layout and date format.',
+      );
+    }
 
     return rows;
   }
@@ -930,6 +957,18 @@
       return value.richText.map((part) => part.text).join('');
     }
     return String(value);
+  }
+
+  // True when any of the first 20 cells of the row has content. ExcelJS
+  // exposes row.cellCount on some builds but not others, so scan a
+  // bounded range instead of relying on it.
+  function rowHasContent(row) {
+    for (let column = 1; column <= 20; column += 1) {
+      if (normalizeWhitespace(cellText(row.getCell(column)))) {
+        return true;
+      }
+    }
+    return false;
   }
 
   window.AttendanceCompiler = {

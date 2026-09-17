@@ -5,7 +5,13 @@ import { calculateAttendance } from '@/lib/attendanceCalculator';
 import { compileAttendance } from '@/lib/attendanceCompiler';
 import { buildAttendanceWorkbook } from '@/lib/excelGenerator';
 import { getMonthDates, parseFingerprintExcel, parseOnlineExcel } from '@/lib/excelParser';
-import { extractTime, parseTimeToMinutes, parseDate, detectNumericDateOrder } from '@/lib/timeUtils';
+import {
+  extractTime,
+  parseTimeToMinutes,
+  parseDate,
+  detectNumericDateOrder,
+  formatDateIso,
+} from '@/lib/timeUtils';
 import { compileWithCloudflare } from './cloudflare-harness';
 import type { RawFingerprintRecord } from '@/lib/types';
 
@@ -95,6 +101,31 @@ describe('attendance calculations', () => {
 
     expect(parseDate('8/1/2026', 2025, 'month-first')?.toDateString()).toBe('Sat Aug 01 2026');
     expect(parseDate('8/1/2026', 2025, 'day-first')?.toDateString()).toBe('Thu Jan 08 2026');
+  });
+
+  it('keeps parsing every date format the exports can produce', () => {
+    // Locks in the supported shapes. If a refactor drops one of these,
+    // that month's fingerprint file silently stops being read, so the
+    // formats are asserted explicitly rather than only via fixtures.
+    const supported: Array<[string, string]> = [
+      ['01-Sep-26', '2026-09-01'],   // fingerprint export, DD-Mon-YY
+      ['1-Sep-2026', '2026-09-01'],
+      ['01/Sep/26', '2026-09-01'],
+      ['1 Sep 2026', '2026-09-01'],
+      ['2026-09-01', '2026-09-01'],  // ISO
+      ['Sep 1, 2026', '2026-09-01'], // online period label style
+      ['1/9/2026', '2026-09-01'],    // day-first numeric
+      ['1-9-2026', '2026-09-01'],
+    ];
+
+    for (const [input, expected] of supported) {
+      const parsed = parseDate(input);
+      expect(parsed, `parseDate(${JSON.stringify(input)}) returned null`).not.toBeNull();
+      expect(formatDateIso(parsed as Date)).toBe(expected);
+    }
+
+    // Month-first numeric dates need the file-level order hint.
+    expect(formatDateIso(parseDate('8/1/2026', 2025, 'month-first') as Date)).toBe('2026-08-01');
   });
 
   it('getMonthDates returns the right number of days for each month and is DST-safe', () => {
@@ -376,6 +407,43 @@ describe('attendance compilation', () => {
     // 10 September has no Actual In but still records its Actual Out.
     expect(sheet!.getCell('G16').value).toBeNull();
     expect(sheet!.getCell('H16').value).toBeCloseTo((12 * 60 + 34) / 1440, 6);
+  });
+
+  it('fails loudly when the fingerprint date format is not recognised (React)', () => {
+    // The original bug was silent: an unreadable date format made the
+    // parser skip every row, and the app still produced a workbook — with
+    // online data only and no Actual In/Actual Out. The parse must now
+    // fail with an actionable message instead.
+    const buffer = workbookBufferFromRows([
+      FINGERPRINT_EXPORT_HEADER,
+      fingerprintExportRow('2026/09/01', '08:00', '16:30'),
+      fingerprintExportRow('2026/09/02', '08:05', '16:35'),
+    ]);
+
+    expect(() => parseFingerprintExcel(buffer)).toThrowError(/none could be read/);
+    expect(() => parseFingerprintExcel(buffer)).toThrowError(/2026\/09\/01/);
+  });
+
+  it('fails loudly when the fingerprint date format is not recognised (Cloudflare)', async () => {
+    const fingerprintBuffer = workbookBufferFromRows([
+      FINGERPRINT_EXPORT_HEADER,
+      fingerprintExportRow('2026/09/01', '08:00', '16:30'),
+      fingerprintExportRow('2026/09/02', '08:05', '16:35'),
+    ]);
+    const onlineBuffer = workbookBufferFromRows([
+      [''],
+      [''],
+      ['Sep 1, 2026 - Sep 17, 2026'],
+      [''],
+      [''],
+      [null, 'Full name', 'Hiraku Sato'],
+      [null, 'Schedule', 'Template', 'Clock-in', 'Clock-out'],
+      ['03 Sep, Th', '08:00 - 16:30', null, '08:10', '18:10'],
+    ]);
+
+    await expect(compileWithCloudflare(fingerprintBuffer, onlineBuffer)).rejects.toThrow(
+      /none could be read/
+    );
   });
 
   it('reads the policy-priority clock-in column even when it has the lower column index', () => {
