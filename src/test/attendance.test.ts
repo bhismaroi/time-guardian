@@ -5,7 +5,7 @@ import { calculateAttendance } from '@/lib/attendanceCalculator';
 import { compileAttendance } from '@/lib/attendanceCompiler';
 import { buildAttendanceWorkbook } from '@/lib/excelGenerator';
 import { getMonthDates, parseFingerprintExcel, parseOnlineExcel } from '@/lib/excelParser';
-import { extractTime, parseTimeToMinutes } from '@/lib/timeUtils';
+import { extractTime, parseTimeToMinutes, parseDate, detectNumericDateOrder } from '@/lib/timeUtils';
 import { compileWithCloudflare } from './cloudflare-harness';
 import type { RawFingerprintRecord } from '@/lib/types';
 
@@ -64,6 +64,37 @@ describe('attendance calculations', () => {
   it('ignores invalid clock times instead of calculating with impossible values', () => {
     expect(parseTimeToMinutes('25:99')).toBeNull();
     expect(extractTime('clocked 24:00')).toBeNull();
+  });
+
+  it('parses the fingerprint export date format (DD-Mon-YY)', () => {
+    // Regression: the fingerprint export writes dates as "01-Sep-26".
+    // parseDate only understood ISO and "d/d/yyyy", so it returned null
+    // for every row, parseFingerprintExcel skipped them all, and the
+    // compiled workbook contained online data only — no Actual In/Actual
+    // Out at all.
+    expect(parseDate('01-Sep-26')?.toDateString()).toBe('Tue Sep 01 2026');
+    expect(parseDate('17-Sep-26')?.toDateString()).toBe('Thu Sep 17 2026');
+    expect(parseDate('1-Sep-2026')?.toDateString()).toBe('Tue Sep 01 2026');
+    expect(parseDate('1 Sep 2026')?.toDateString()).toBe('Tue Sep 01 2026');
+    expect(parseDate('01/Sep/26')?.toDateString()).toBe('Tue Sep 01 2026');
+    // Genuine junk still fails.
+    expect(parseDate('not-a-date')).toBeNull();
+    expect(parseDate('31-Feb-26')).toBeNull();
+  });
+
+  it('resolves the ambiguous numeric date order per file', () => {
+    // "8/1/2026" is 1 August in a month-first export and 8 January in a
+    // day-first one. A single-month export keeps the month constant while
+    // the day varies, which is what detectNumericDateOrder uses.
+    expect(detectNumericDateOrder(['8/1/2026', '8/2/2026', '8/12/2026'])).toBe('month-first');
+    expect(detectNumericDateOrder(['1/8/2026', '2/8/2026', '31/8/2026'])).toBe('day-first');
+
+    // A component above 12 can only be a day, which pins the order.
+    expect(detectNumericDateOrder(['8/1/2026', '13/1/2026'])).toBe('day-first');
+    expect(detectNumericDateOrder(['1/8/2026', '1/13/2026'])).toBe('month-first');
+
+    expect(parseDate('8/1/2026', 2025, 'month-first')?.toDateString()).toBe('Sat Aug 01 2026');
+    expect(parseDate('8/1/2026', 2025, 'day-first')?.toDateString()).toBe('Thu Jan 08 2026');
   });
 
   it('getMonthDates returns the right number of days for each month and is DST-safe', () => {
@@ -244,6 +275,107 @@ describe('attendance compilation', () => {
     const buffer = XLSX.write(workbook, { bookType: 'xlsx', type: 'array' });
 
     expect(() => parseFingerprintExcel(buffer)).toThrowError(/missing both "Actual In\/Out" and "Clock In\/Out" columns/);
+  });
+
+  // The fingerprint export HR uploads has this column layout: Name in
+  // column D, Date in column F as "01-Sep-26", and the policy-preferred
+  // Actual In / Actual Out in columns J and K.
+  const FINGERPRINT_EXPORT_HEADER = [
+    'Emp No.', 'No. ID', 'NIK', 'Name', 'Auto-Assign', 'Date', 'Working Hours',
+    'Clock in Time', 'Clock Out Time', 'Actual In', 'Actual Out', 'Normal', 'Real',
+    'Tardiness', 'Leave earlier', 'Absent', 'Over Time', 'Total work hours', 'Exception',
+  ];
+
+  function fingerprintExportRow(date: string, actualIn: string, actualOut: string): string[] {
+    return [
+      '37', '1', '', 'Hiraku Sato', '', date, 'Office Hour', '08:00', '16:30',
+      actualIn, actualOut, '1', '', '', '', '', '', '', '',
+    ];
+  }
+
+  function workbookBufferFromRows(rows: unknown[][]): ArrayBuffer {
+    const workbook = XLSX.utils.book_new();
+    XLSX.utils.book_append_sheet(workbook, XLSX.utils.aoa_to_sheet(rows), 'Sheet1');
+    return XLSX.write(workbook, { bookType: 'xlsx', type: 'array' });
+  }
+
+  it('reads Actual In and Actual Out from the real fingerprint export layout', () => {
+    // Regression: the export writes dates as "01-Sep-26", which parseDate
+    // did not understand. Every fingerprint row was dropped, so the
+    // compiled workbook was built from the online source alone and none
+    // of the Actual In / Actual Out values appeared.
+    const buffer = workbookBufferFromRows([
+      FINGERPRINT_EXPORT_HEADER,
+      fingerprintExportRow('01-Sep-26', '', ''),
+      fingerprintExportRow('03-Sep-26', '07:55', '15:14'),
+      fingerprintExportRow('10-Sep-26', '', '12:34'),
+    ]);
+
+    const records = parseFingerprintExcel(buffer);
+
+    expect(records).toHaveLength(3);
+    expect(records[0].dateKey).toBe('2026-09-01');
+    expect(records[1].dateKey).toBe('2026-09-03');
+    expect(records[1].actualIn).toBe('07:55');
+    expect(records[1].actualOut).toBe('15:14');
+    // A missing Actual In must not discard the row's Actual Out.
+    expect(records[2].actualIn).toBeNull();
+    expect(records[2].actualOut).toBe('12:34');
+
+    // End to end: the fingerprint times reach the compiled records.
+    const compiled = compileAttendance(records, new Map());
+    expect(compiled).toHaveLength(1);
+    const thirdOfMonth = compiled[0].records.find((record) => record.date.getDate() === 3);
+    expect(thirdOfMonth?.fingerprintIn).toBe('07:55');
+    expect(thirdOfMonth?.fingerprintOut).toBe('15:14');
+  });
+
+  it('records Actual In and Actual Out on the Cloudflare path too (real export layout)', async () => {
+    // The Cloudflare bundle has its own date parser. It only understood
+    // "d/d/yyyy" and ISO, so a DD-Mon-YY fingerprint export produced zero
+    // rows there as well: the workbook came out with online data only.
+    const fingerprintBuffer = workbookBufferFromRows([
+      FINGERPRINT_EXPORT_HEADER,
+      fingerprintExportRow('01-Sep-26', '', ''),
+      fingerprintExportRow('03-Sep-26', '07:55', '15:14'),
+      fingerprintExportRow('04-Sep-26', '10:40', '17:02'),
+      fingerprintExportRow('10-Sep-26', '', '12:34'),
+    ]);
+
+    const onlineBuffer = workbookBufferFromRows([
+      [''],
+      [''],
+      ['Sep 1, 2026 - Sep 17, 2026'],
+      [''],
+      [''],
+      [null, 'Full name', 'Hiraku Sato'],
+      [null, 'Schedule', 'Template', 'Clock-in', 'Clock-out'],
+      ['03 Sep, Th', '08:00 - 16:30', null, '08:10', '18:10'],
+      ['04 Sep, Fr', '08:00 - 17:00', null, '-', '-'],
+      ['10 Sep, Th', '08:00 - 16:30', null, '-', '-'],
+    ]);
+
+    const result = await compileWithCloudflare(fingerprintBuffer, onlineBuffer);
+
+    expect(result.summary.matchedEmployees).toBe(1);
+    expect(result.summary.onlineOnlyEmployees).toBe(0);
+    expect(result.fileName).toBe('Compiled Attendance September 2026.xlsx');
+
+    const sheet = result.workbook.worksheets.find(
+      (candidate: { name: string }) => candidate.name === 'Hiraku Sato'
+    );
+    expect(sheet).toBeDefined();
+
+    // Day N of the month is written to row 6 + N, so 3 September is row 9.
+    // G = earliest clock-in across both sources, H = latest clock-out.
+    expect(sheet!.getCell('G9').value).toBeCloseTo((7 * 60 + 55) / 1440, 6);
+    expect(sheet!.getCell('H9').value).toBeCloseTo((18 * 60 + 10) / 1440, 6);
+    // 4 September is fingerprint-only because the online cell is "-".
+    expect(sheet!.getCell('G10').value).toBeCloseTo((10 * 60 + 40) / 1440, 6);
+    expect(sheet!.getCell('H10').value).toBeCloseTo((17 * 60 + 2) / 1440, 6);
+    // 10 September has no Actual In but still records its Actual Out.
+    expect(sheet!.getCell('G16').value).toBeNull();
+    expect(sheet!.getCell('H16').value).toBeCloseTo((12 * 60 + 34) / 1440, 6);
   });
 
   it('reads the policy-priority clock-in column even when it has the lower column index', () => {
@@ -463,6 +595,59 @@ describe('attendance compilation', () => {
     expect(leaveEarlierCell?.f).toBeDefined();
     expect(leaveEarlierCell?.t).toBe('n');
     expect(leaveEarlierCell?.v).toBeUndefined();
+  });
+
+  it('omits the cached value on weekday no-attendance rows too', () => {
+    // Regression: the no-cached-value fix only handled weekends (totalHours
+    // ""), but a weekday row with no punches (holiday, leave, missed punch)
+    // produced totalHours '0:00' and toFormulaFraction('0:00') returned 0,
+    // so the workbook shipped a cached 0 in the formula cells. Viewers
+    // displayed 0:00 in Total Hours until the user forced F9, even though
+    // the formula's IF guard returns "" for empty G/H. The compiler now
+    // blanks totalHours whenever there is no attendance at all.
+    const compiled = compileAttendance(
+      [
+        // Monday 2 Mar 2026 has a punch; Friday 6 Mar 2026 has none.
+        {
+          empNo: '427',
+          name: 'Adi Misykatul Anwar',
+          date: '2026-03-02',
+          dateKey: '2026-03-02',
+          workingHours: 'Office Hour',
+          clockIn: '08:00',
+          clockOut: '17:00',
+          actualIn: '08:00',
+          actualOut: '17:00',
+        },
+      ],
+      new Map()
+    );
+
+    const workbook = buildAttendanceWorkbook(compiled);
+    const sheet = workbook.Sheets['Adi'];
+
+    // First data row is row 6 (row 1: title, row 2: period, row 3: blank,
+    // row 4: headers, row 5: subheaders, row 6: first day = Sun 1 Mar).
+    // Mon 2 Mar is the 2nd record -> row 7. Fri 6 Mar is the 6th record
+    // -> row 11.
+    const workedTotalHours = sheet?.['I7'];
+    const workedTardiness = sheet?.['J7'];
+    // The worked day keeps its cached numeric value (510 min = 0.354167).
+    expect(workedTotalHours?.v).toBeCloseTo(510 / (24 * 60), 6);
+    // Tardiness is 0 for an 08:00 clock-in, so no cached value is expected.
+    expect(workedTardiness?.v).toBeUndefined();
+
+    // The weekday-without-attendance row must NOT carry a cached 0.
+    const fridayTotalHours = sheet?.['I11'];
+    const fridayTardiness = sheet?.['J11'];
+    const fridayLeaveEarlier = sheet?.['K11'];
+    const fridayOvertime = sheet?.['L11'];
+    expect(fridayTotalHours?.f).toContain('H11-G11');
+    expect(fridayTotalHours?.t).toBe('n');
+    expect(fridayTotalHours?.v).toBeUndefined();
+    expect(fridayTardiness?.v).toBeUndefined();
+    expect(fridayLeaveEarlier?.v).toBeUndefined();
+    expect(fridayOvertime?.v).toBeUndefined();
   });
 
   it('throws when no date can be detected in either source file', () => {

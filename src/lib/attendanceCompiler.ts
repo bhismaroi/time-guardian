@@ -273,7 +273,15 @@ export function compileAttendance(
         onlineOut,
         actualIn,
         actualOut,
-        totalHours: isWeekend(date) ? '' : formatted.totalHours,
+        // Only populate totalHours when the employee actually has
+        // attendance that day. Weekends are blank, but so are weekday
+        // rows with no punches (holiday, leave, missed punch): leaving
+        // '0:00' here would make toFormulaFraction produce a cached
+        // value of 0 in the workbook's formula cells, and viewers
+        // would show 0:00 until the user forced F9 to recalculate.
+        // The Excel formula itself returns "" for empty G/H, so we
+        // must not ship a cached 0 to match.
+        totalHours: hasAttendance ? formatted.totalHours : '',
         tardiness: formatted.tardiness,
         leaveEarlier: formatted.leaveEarlier,
         overtime: formatted.overtime,

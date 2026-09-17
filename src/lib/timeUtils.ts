@@ -120,41 +120,155 @@ export function calculateBreakOverlap(
 }
 
 /**
- * Parse a date from multiple workbook formats.
+ * Whether a numeric date such as "8/1/2026" should be read as
+ * day-first (1 August) or month-first (8 January). A single export uses
+ * one convention throughout, so this is decided once per date column.
  */
-export function parseDate(dateStr: string, defaultYear = 2025): Date | null {
+export type NumericDateOrder = 'day-first' | 'month-first';
+
+// Two-digit years are expanded into 2000-2069 (the fingerprint export
+// writes "26" for 2026), falling back to 1900-1999 at or above the
+// cutoff.
+function expandTwoDigitYear(value: number): number {
+  if (value >= 100) return value;
+  return value < 70 ? 2000 + value : 1900 + value;
+}
+
+/**
+ * Build a Date only from a real calendar day. Out-of-range values and
+ * rollovers such as 31 February (which JS would silently turn into
+ * 3 March) return null instead of a wrong date.
+ */
+function makeDateParts(year: number, month: number, day: number): Date | null {
+  if (!Number.isFinite(year) || !Number.isFinite(month) || !Number.isFinite(day)) return null;
+  if (month < 1 || month > 12 || day < 1 || day > 31) return null;
+
+  const date = new Date(year, month - 1, day);
+  if (date.getFullYear() !== year || date.getMonth() !== month - 1 || date.getDate() !== day) {
+    return null;
+  }
+  return date;
+}
+
+/**
+ * Infer whether a column of numeric dates ("8/1/2026") is day-first or
+ * month-first.
+ *
+ * A component greater than 12 can only be a day, which pins the order
+ * outright. When every value is ambiguous (both components <= 12) the
+ * month of a single-month export stays constant across rows while the
+ * day varies, so the interpretation whose SECOND component is constant
+ * is the month-first one. "8/1, 8/2, ... 8/12" is therefore month-first
+ * and "1/8, 2/8, ... 12/8" is day-first.
+ */
+export function detectNumericDateOrder(
+  values: Iterable<string | null | undefined>
+): NumericDateOrder {
+  const firstComponents = new Set<number>();
+  const secondComponents = new Set<number>();
+  let mustBeDayFirst = false;
+  let mustBeMonthFirst = false;
+
+  for (const value of values) {
+    if (!value) continue;
+
+    const match = normalizeWhitespace(String(value)).match(
+      /^(\d{1,2})[/\-.](\d{1,2})[/\-.]\d{2,4}$/
+    );
+    if (!match) continue;
+
+    const first = Number(match[1]);
+    const second = Number(match[2]);
+    firstComponents.add(first);
+    secondComponents.add(second);
+
+    if (first > 12) mustBeDayFirst = true;
+    if (second > 12) mustBeMonthFirst = true;
+  }
+
+  if (mustBeDayFirst) return 'day-first';
+  if (mustBeMonthFirst) return 'month-first';
+
+  return firstComponents.size < secondComponents.size ? 'month-first' : 'day-first';
+}
+
+/**
+ * Parse a date from multiple workbook formats.
+ *
+ * Supported shapes:
+ *   - Fingerprint export: "01-Sep-26", "1 Sep 2026", "01/Sep/2026"
+ *   - ISO:                "2026-09-01"
+ *   - Numeric:            "8/1/2026", "1-8-2026", "1/8"
+ *   - Month name:         "Sep 1, 2026", "September 1 2026"
+ *
+ * `numericOrder` only affects the ambiguous numeric forms, where the
+ * same string can mean either 1 August or 8 January; callers pass the
+ * value that detectNumericDateOrder returned for the whole column.
+ */
+export function parseDate(
+  dateStr: string,
+  defaultYear = 2025,
+  numericOrder: NumericDateOrder = 'day-first'
+): Date | null {
   if (!dateStr) return null;
 
   const trimmed = normalizeWhitespace(dateStr);
+  if (!trimmed) return null;
 
+  // ISO: 2026-09-01.
   if (/^\d{4}-\d{2}-\d{2}$/.test(trimmed)) {
     const [year, month, day] = trimmed.split('-').map(Number);
-    return new Date(year, month - 1, day);
+    return makeDateParts(year, month, day);
   }
 
-  if (/^\d{1,2}\/\d{1,2}\/\d{4}$/.test(trimmed)) {
-    const [day, month, year] = trimmed.split('/').map(Number);
-    return new Date(year, month - 1, day);
+  // Numeric with a year: 8/1/2026, 1-8-26.
+  const numeric = trimmed.match(/^(\d{1,2})[/\-.](\d{1,2})[/\-.](\d{2,4})$/);
+  if (numeric) {
+    const first = Number(numeric[1]);
+    const second = Number(numeric[2]);
+    const year = expandTwoDigitYear(Number(numeric[3]));
+    const month = numericOrder === 'month-first' ? first : second;
+    const day = numericOrder === 'month-first' ? second : first;
+    return makeDateParts(year, month, day);
   }
 
-  if (/^\d{1,2}\/\d{1,2}$/.test(trimmed)) {
-    const [day, month] = trimmed.split('/').map(Number);
-    return new Date(defaultYear, month - 1, day);
+  // Numeric without a year: 1/8.
+  const numericNoYear = trimmed.match(/^(\d{1,2})[/\-.](\d{1,2})$/);
+  if (numericNoYear) {
+    const first = Number(numericNoYear[1]);
+    const second = Number(numericNoYear[2]);
+    const month = numericOrder === 'month-first' ? first : second;
+    const day = numericOrder === 'month-first' ? second : first;
+    return makeDateParts(defaultYear, month, day);
   }
 
-  const monthDayYear = trimmed.match(/^([A-Za-z]{3,9})\s+(\d{1,2}),?\s+(\d{4})$/);
-  if (monthDayYear) {
-    const month = MONTH_LOOKUP[monthDayYear[1].toLowerCase()];
+  // Day, month name, year: "01-Sep-26", "1 Sep 2026", "01/Sep/2026".
+  const dayMonthNameYear = trimmed.match(
+    /^(\d{1,2})[\s\-/.,]+([A-Za-z]{3,9})[\s\-/.,]+(\d{2,4})$/
+  );
+  if (dayMonthNameYear) {
+    const month = MONTH_LOOKUP[dayMonthNameYear[2].toLowerCase()];
     if (month !== undefined) {
-      return new Date(Number(monthDayYear[3]), month, Number(monthDayYear[2]));
+      return makeDateParts(
+        expandTwoDigitYear(Number(dayMonthNameYear[3])),
+        month + 1,
+        Number(dayMonthNameYear[1])
+      );
     }
   }
 
-  const dayMonthYear = trimmed.match(/^(\d{1,2})\s+([A-Za-z]{3,9})\s+(\d{4})$/);
-  if (dayMonthYear) {
-    const month = MONTH_LOOKUP[dayMonthYear[2].toLowerCase()];
+  // Month name, day, year: "Sep 1, 2026".
+  const monthNameDayYear = trimmed.match(
+    /^([A-Za-z]{3,9})[\s\-/.,]+(\d{1,2})[\s\-/.,]+(\d{2,4})$/
+  );
+  if (monthNameDayYear) {
+    const month = MONTH_LOOKUP[monthNameDayYear[1].toLowerCase()];
     if (month !== undefined) {
-      return new Date(Number(dayMonthYear[3]), month, Number(dayMonthYear[1]));
+      return makeDateParts(
+        expandTwoDigitYear(Number(monthNameDayYear[3])),
+        month + 1,
+        Number(monthNameDayYear[2])
+      );
     }
   }
 

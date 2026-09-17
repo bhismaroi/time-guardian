@@ -4,6 +4,7 @@ import * as XLSX from 'xlsx';
 import type { RawFingerprintRecord } from './types';
 import { MONTH_LOOKUP } from './policy';
 import {
+  detectNumericDateOrder,
   extractNameParts,
   extractTime,
   formatDateIso,
@@ -12,6 +13,7 @@ import {
   normalizeName,
   normalizeWhitespace,
   parseDate,
+  type NumericDateOrder,
 } from './timeUtils';
 
 type DailyClock = { clockIn: string | null; clockOut: string | null };
@@ -93,7 +95,10 @@ function parseDateFromLabel(label: string, context: ReportContext | null): strin
   return formatDateIso(new Date(year, month, day));
 }
 
-function toDateKey(value: unknown): { date: Date; dateKey: string } | null {
+function toDateKey(
+  value: unknown,
+  numericOrder: NumericDateOrder = 'day-first'
+): { date: Date; dateKey: string } | null {
   if (value === null || value === undefined || value === '') return null;
 
   if (typeof value === 'number' && Number.isFinite(value)) {
@@ -106,7 +111,7 @@ function toDateKey(value: unknown): { date: Date; dateKey: string } | null {
   const stringValue = normalizeWhitespace(String(value));
   if (!stringValue) return null;
 
-  const parsed = parseDate(stringValue, new Date().getFullYear());
+  const parsed = parseDate(stringValue, new Date().getFullYear(), numericOrder);
   if (!parsed) return null;
 
   return { date: parsed, dateKey: formatDateIso(parsed) };
@@ -358,6 +363,18 @@ export function parseFingerprintExcel(file: ArrayBuffer): RawFingerprintRecord[]
     );
   }
 
+  // A numeric date column such as "8/1/2026" can mean 1 August or
+  // 8 January depending on the export convention. The whole column is
+  // read one way, so decide the convention once up front instead of
+  // guessing per row (which would scatter a month-first export across
+  // twelve months).
+  const numericDateOrder = detectNumericDateOrder(
+    data.slice(1).map((row) => {
+      const value = row?.[columnIndex.date];
+      return value === null || value === undefined ? '' : String(value);
+    })
+  );
+
   const records: RawFingerprintRecord[] = [];
 
   for (let rowIndex = 1; rowIndex < data.length; rowIndex++) {
@@ -371,7 +388,7 @@ export function parseFingerprintExcel(file: ArrayBuffer): RawFingerprintRecord[]
 
     if (!name || !dateValue) continue;
 
-    const parsedDate = toDateKey(dateValue);
+    const parsedDate = toDateKey(dateValue, numericDateOrder);
     if (!parsedDate) continue;
 
     // The header-row column detection (columnIndex.clockIn /

@@ -724,20 +724,56 @@
     return dayFirst;
   }
 
+  // Two-digit years are expanded into 2000-2069 (the fingerprint export
+  // writes "01-Sep-26" for 1 September 2026), falling back to 1900-1999
+  // at or above the cutoff.
+  function expandTwoDigitYear(value) {
+    if (value >= 100) {
+      return value;
+    }
+    return value < 70 ? 2000 + value : 1900 + value;
+  }
+
   function parseDateString(input, reportPeriod) {
     const text = normalizeWhitespace(input);
     if (!text) {
       return null;
     }
 
-    let match = text.match(/^(\d{1,2})\/(\d{1,2})\/(\d{4})$/);
+    let match = text.match(/^(\d{1,2})[/\-.](\d{1,2})[/\-.](\d{2,4})$/);
     if (match) {
-      return resolveAmbiguousDate(Number(match[1]), Number(match[2]), Number(match[3]), reportPeriod);
+      return resolveAmbiguousDate(
+        Number(match[1]),
+        Number(match[2]),
+        expandTwoDigitYear(Number(match[3])),
+        reportPeriod,
+      );
     }
 
     match = text.match(/^(\d{4})-(\d{2})-(\d{2})$/);
     if (match) {
       return makeUtcDate(Number(match[1]), Number(match[2]), Number(match[3]));
+    }
+
+    // Day, month name, year: the fingerprint export writes dates as
+    // "01-Sep-26". Without this branch every fingerprint row was
+    // discarded, so the compiled workbook carried online data only and
+    // no Actual In/Actual Out.
+    match = text.match(/^(\d{1,2})[\s\-/.,]+([A-Za-z]{3,9})[\s\-/.,]+(\d{2,4})$/);
+    if (match) {
+      const month = monthNumber(match[2]);
+      if (month) {
+        return makeUtcDate(expandTwoDigitYear(Number(match[3])), month, Number(match[1]));
+      }
+    }
+
+    // Month name, day, year: "Sep 1, 2026".
+    match = text.match(/^([A-Za-z]{3,9})[\s\-/.,]+(\d{1,2})[\s\-/.,]+(\d{2,4})$/);
+    if (match) {
+      const month = monthNumber(match[1]);
+      if (month) {
+        return makeUtcDate(expandTwoDigitYear(Number(match[3])), month, Number(match[2]));
+      }
     }
 
     return null;
